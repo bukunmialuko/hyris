@@ -3,6 +3,8 @@
   "private": true,
   "version": "0.1.0",
   "description": "Hyris — turn any web page into an AI-generated quiz",
+  "author": "Oluwabukunmi Aluko",
+  "license": "MIT",
   "workspaces": [
     "apps/extension",
     "packages/contracts"
