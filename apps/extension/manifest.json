@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Hyris",
+  "version": "0.1.0",
+  "description": "Turn any web page into a quiz. Read, click, test what stuck.",
+  "action": {
+    "default_popup": "src/popup/index.html",
+    "default_title": "Hyris — generate a quiz from this page"
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel/index.html"
+  },
+  "background": {
+    "service_worker": "src/background/index.ts",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["src/content/extract.ts"],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": ["activeTab", "sidePanel", "storage"],
+  "host_permissions": ["https://api.hyris.app/*"],
+  "icons": {
+    "16": "public/icons/icon16.png",
+    "48": "public/icons/icon48.png",
+    "128": "public/icons/icon128.png"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@hyris/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "main": "ts/quiz.ts",
+  "types": "ts/quiz.ts",
+  "scripts": {
+    "generate": "json2ts quiz.schema.json -o ts/quiz.ts"
+  },
+  "devDependencies": {
+    "json-schema-to-typescript": "^15.0.0"
+  }
+}

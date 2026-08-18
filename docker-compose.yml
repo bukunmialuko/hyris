@@ -1,0 +1,26 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hyris
+      POSTGRES_PASSWORD: hyris
+      POSTGRES_DB: hyris
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  api:
+    build: ./apps/api
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://hyris:hyris@db:5432/hyris
+      LLM_PROVIDER: anthropic
+    env_file:
+      - .env
+    depends_on:
+      - db
+
+volumes:
+  pgdata:

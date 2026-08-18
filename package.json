@@ -1,0 +1,16 @@
+{
+  "name": "hyris",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Hyris — turn any web page into an AI-generated quiz",
+  "workspaces": [
+    "apps/extension",
+    "packages/contracts"
+  ],
+  "scripts": {
+    "dev:ext": "npm run dev --workspace apps/extension",
+    "build:ext": "npm run build --workspace apps/extension",
+    "dev:api": "cd apps/api && uvicorn app.main:app --reload --port 8000",
+    "types": "npm run generate --workspace packages/contracts"
+  }
+}

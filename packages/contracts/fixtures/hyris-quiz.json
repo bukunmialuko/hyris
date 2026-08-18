@@ -1,0 +1,88 @@
+{
+  "quiz": {
+    "id": "quiz_transformers_001",
+    "title": "Understanding Transformers",
+    "source": {
+      "url": "https://en.wikipedia.org/wiki/Transformer_(deep_learning)",
+      "page_title": "Transformer (deep learning architecture)",
+      "extracted_at": "2026-08-18T10:00:00Z"
+    },
+    "profile": {
+      "education_level": "masters",
+      "difficulty": "hard",
+      "cognitive_level": "analysis",
+      "question_style": "conceptual",
+      "question_count": 5,
+      "allow_trick_questions": false,
+      "require_explanations": true
+    },
+    "concepts": [
+      "Self-attention",
+      "Positional encoding",
+      "Multi-head attention",
+      "Training parallelism"
+    ],
+    "questions": [
+      {
+        "id": "q1",
+        "bloom_level": "analyse",
+        "concept": "Self-attention",
+        "question": "Which mechanism allows a transformer to model relationships between all tokens in a sequence?",
+        "options": ["Convolution", "Self-attention", "Pooling", "Dropout"],
+        "correct_answer": 1,
+        "explanation": "Self-attention lets every token attend to every other token, producing contextual representations — the defining feature of the architecture."
+      },
+      {
+        "id": "q2",
+        "bloom_level": "understand",
+        "concept": "Positional encoding",
+        "question": "Why do transformers need positional encodings?",
+        "options": [
+          "To reduce overfitting",
+          "To normalise gradients",
+          "The architecture has no recurrence, so order must be injected",
+          "To compress the vocabulary"
+        ],
+        "correct_answer": 2,
+        "explanation": "With no recurrence or convolution, the model has no inherent notion of token order — positional encodings add that information to the embeddings."
+      },
+      {
+        "id": "q3",
+        "bloom_level": "analyse",
+        "concept": "Multi-head attention",
+        "question": "What advantage does multi-head attention provide over a single attention function?",
+        "options": [
+          "It removes the need for embeddings",
+          "It attends to different representation subspaces in parallel",
+          "It guarantees convergence",
+          "It reduces the parameter count"
+        ],
+        "correct_answer": 1,
+        "explanation": "Multiple heads let the model jointly attend to information from different representation subspaces at different positions."
+      },
+      {
+        "id": "q4",
+        "bloom_level": "evaluate",
+        "concept": "Training parallelism",
+        "question": "Which claim best explains why transformers train faster than RNNs?",
+        "options": [
+          "They use fewer parameters",
+          "Their computation over a sequence is parallelisable",
+          "They skip backpropagation",
+          "They require no labelled data"
+        ],
+        "correct_answer": 1,
+        "explanation": "RNNs process tokens sequentially; transformers process the whole sequence at once, so training parallelises across the sequence dimension."
+      },
+      {
+        "id": "q5",
+        "bloom_level": "apply",
+        "concept": "Self-attention",
+        "question": "You need contextual token representations for a long document. Based on this page, the most suitable core mechanism is:",
+        "options": ["Recurrence", "Max pooling", "Self-attention", "Data augmentation"],
+        "correct_answer": 2,
+        "explanation": "Self-attention handles long-range dependencies directly, which is why it is preferred for long-context representation tasks."
+      }
+    ]
+  }
+}
