@@ -93,6 +93,9 @@
     box-shadow: var(--shadow-soft);
   }
   .theme-toggle:hover { opacity: .8; }
+  .popup-head .actions { display: flex; align-items: center; gap: 8px; }
+  .theme-toggle.icon { display: flex; align-items: center; justify-content: center; padding: 9px 16px; }
+  .theme-toggle.icon svg { display: block; width: 14px; height: 14px; }
   .ext-icon {
     width: 38px; height: 38px; border-radius: 999px; background: var(--pill-bg);
     color: var(--pill-ink); font-weight: 700; font-size: 14px; display: flex; align-items: center;
@@ -182,8 +185,21 @@
     box-shadow: var(--shadow-soft); animation: breathe 1.6s ease-in-out infinite;
   }
   @keyframes breathe { 0%,100%{transform:scale(1)} 50%{transform:scale(1.12)} }
+  /* Same mass as the loader, visibly inert — the run has stopped, not stalled. */
+  .orb.dead {
+    animation: none;
+    background: radial-gradient(circle at 32% 28%, var(--surface-3), var(--line-strong));
+    opacity: .55;
+  }
   .load-step { min-height: 14px; color: var(--ink); }
   .load-sub { color: var(--ink-3); margin-top: 10px; }
+  /* Failure copy is a sentence, not a label — micro caps are unreadable at length. */
+  .load-sub.msg {
+    text-transform: none; letter-spacing: normal; font-weight: 400;
+    font-size: 12.5px; line-height: 1.6; color: var(--ink-2);
+    max-width: 260px; margin-left: auto; margin-right: auto;
+  }
+  .retry-btn { padding: 13px 26px; }
 
   /* Quiz */
   .progress-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; color: var(--ink-3); }
@@ -313,32 +329,17 @@
 <div class="popup" id="popup">
   <div class="popup-head">
     <div class="t">hyris<small>Turn this page into a quiz</small></div>
-    <button class="theme-toggle micro" onclick="toggleTheme()">◐</button>
+    <div class="actions">
+      <button class="theme-toggle micro" onclick="toggleTheme()">◐</button>
+      <button class="theme-toggle icon" onclick="pinPanel()" title="Pin this panel to the right" aria-label="Pin this panel to the right">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <rect x="1.25" y="2.75" width="13.5" height="10.5" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
+          <path d="M10 3.45h2.25A2 2 0 0 1 14.05 5.45v5.1a2 2 0 0 1-2 2H10z" fill="currentColor"/>
+        </svg>
+      </button>
+    </div>
   </div>
-  <div class="popup-body">
-    <div class="field-label micro">Persona</div>
-    <div class="seg" id="personaSeg">
-      <div class="chip" data-v="High School">High School</div>
-      <div class="chip" data-v="Undergraduate">Undergrad</div>
-      <div class="chip sel" data-v="Master's">Master's</div>
-      <div class="chip" data-v="Research">Research</div>
-    </div>
-    <div class="field-label micro">Difficulty</div>
-    <div class="seg" id="diffSeg">
-      <div class="chip" data-v="Easy">Easy</div>
-      <div class="chip" data-v="Medium">Medium</div>
-      <div class="chip sel" data-v="Hard">Hard</div>
-      <div class="chip" data-v="Expert">Expert</div>
-    </div>
-    <div class="field-label micro">Questions</div>
-    <div class="seg" id="countSeg">
-      <div class="chip sel" data-v="5">5</div>
-      <div class="chip" data-v="10">10</div>
-      <div class="chip" data-v="15">15</div>
-    </div>
-    <button class="gen-btn" onclick="generateQuiz()">Generate quiz</button>
-    <div class="page-detect micro"><div class="dot"></div> page detected · ~1,900 words</div>
-  </div>
+  <div class="popup-body" id="popupBody"></div>
 </div>
 
 <script>
@@ -382,18 +383,22 @@
   let quizData = null, idx = 0, score = 0, answered = [];
 
   async function loadQuiz() {
-    if (QUIZ_URL) {
-      try {
-        const r = await fetch(QUIZ_URL, { cache: "no-store" });
-        if (!r.ok) throw new Error(r.status);
-        const data = await r.json();
-        return { data, source: "remote json" };
-      } catch (e) {
-        console.warn("Quiz fetch failed, using fallback:", e);
-        return { data: FALLBACK, source: "fallback (fetch failed)" };
-      }
+    // With no URL set this file still has to demo itself, so it uses the
+    // sample above. A configured URL that fails is a real error, though.
+    if (!QUIZ_URL) return { data: FALLBACK, source: "built-in fallback" };
+
+    let r;
+    try {
+      r = await fetch(QUIZ_URL, { cache: "no-store" });
+    } catch (e) {
+      throw new Error("Couldn’t reach the quiz source. Check your connection.");
     }
-    return { data: FALLBACK, source: "built-in fallback" };
+    if (!r.ok) throw new Error(`The quiz source answered ${r.status}.`);
+    try {
+      return { data: await r.json(), source: "remote json" };
+    } catch (e) {
+      throw new Error("The quiz source didn’t return valid JSON.");
+    }
   }
 
   // ----- theme -----
@@ -411,26 +416,100 @@
     const hint = document.getElementById('extHint');
     if (hint) hint.remove();
   }
-  document.querySelectorAll('.seg').forEach(seg => {
-    seg.addEventListener('click', e => {
-      const chip = e.target.closest('.chip'); if (!chip) return;
-      seg.querySelectorAll('.chip').forEach(c => c.classList.remove('sel'));
-      chip.classList.add('sel');
-    });
+  // One profile, shared by the popup and the pinned panel — pinning shows the
+  // selections you already made rather than resetting them.
+  const PROFILE = { persona: "Master's", difficulty: "Hard", count: "5" };
+
+  const FIELDS = {
+    persona: [["High School","High School"],["Undergraduate","Undergrad"],["Master's","Master's"],["Research","Research"]],
+    difficulty: [["Easy","Easy"],["Medium","Medium"],["Hard","Hard"],["Expert","Expert"]],
+    count: [["5","5"],["10","10"],["15","15"]],
+  };
+
+  // The one definition of the setup page; the popup and the panel both use it.
+  function setupForm(action) {
+    const seg = (field) => `<div class="seg" data-field="${field}">` +
+      FIELDS[field].map(([v, label]) =>
+        `<div class="chip${PROFILE[field] === v ? " sel" : ""}" data-v="${v}">${label}</div>`).join("") +
+      `</div>`;
+    return `
+      <div class="field-label micro">Persona</div>${seg("persona")}
+      <div class="field-label micro">Difficulty</div>${seg("difficulty")}
+      <div class="field-label micro">Questions</div>${seg("count")}
+      <button class="gen-btn" onclick="${action}">Generate quiz</button>
+      <div class="page-detect micro"><div class="dot"></div> page detected · ~1,900 words</div>`;
+  }
+
+  function showSetup() {
+    document.getElementById('spBody').innerHTML = setupForm('runGeneration()');
+  }
+
+  function profileSummary() {
+    return `${PROFILE.persona} · ${PROFILE.difficulty} · ${PROFILE.count} questions`;
+  }
+
+  // Delegated so the panel's copy of the form works too.
+  document.addEventListener('click', e => {
+    const chip = e.target.closest('.seg[data-field] .chip');
+    if (!chip) return;
+    PROFILE[chip.closest('.seg').dataset.field] = chip.dataset.v;
+    syncSegs();
   });
+
+  function syncSegs() {
+    document.querySelectorAll('.seg[data-field]').forEach(seg => {
+      const val = PROFILE[seg.dataset.field];
+      seg.querySelectorAll('.chip').forEach(c => c.classList.toggle('sel', c.dataset.v === val));
+    });
+  }
+
+  document.getElementById('popupBody').innerHTML = setupForm('generateQuiz()');
 
   // ----- flow -----
   async function generateQuiz() {
     togglePopup();
+    runGeneration();
+  }
+
+  // Retry re-enters here, not generateQuiz — the popup is already closed by
+  // then, and toggling it would pop it back open.
+  async function runGeneration() {
     openPanel();
-    const [loaded] = await Promise.all([loadQuiz(), showLoading()]);
-    quizData = loaded;
-    idx = 0; score = 0; answered = [];
-    renderQuestion();
+    try {
+      const [loaded] = await Promise.all([loadQuiz(), showLoading()]);
+      quizData = loaded;
+      idx = 0; score = 0; answered = [];
+      renderQuestion();
+    } catch (err) {
+      showError(err.message || String(err));
+    }
+  }
+
+  function showError(message) {
+    clearInterval(loadTimer);
+    document.getElementById('spBody').innerHTML = `
+      <div class="loader-wrap">
+        <div class="orb dead"></div>
+        <div>
+          <div class="load-step micro">Couldn’t build the quiz</div>
+          <div class="load-sub msg">${message}</div>
+        </div>
+        <button class="btn-solid retry-btn" onclick="runGeneration()">↻ Try again</button>
+      </div>`;
   }
   function openPanel() { document.getElementById('sidePanel').classList.add('open'); }
+
+  // Docks the panel without generating — reopens an existing quiz, or the
+  // empty state if there isn't one yet.
+  function pinPanel() {
+    togglePopup();
+    openPanel();
+    if (!quizData) showSetup();
+  }
   function closePanel() { document.getElementById('sidePanel').classList.remove('open'); }
   const Q = () => quizData.data.quiz.questions;
+
+  let loadTimer = null;
 
   function showLoading() {
     const body = document.getElementById('spBody');
@@ -439,16 +518,21 @@
         <div class="orb"></div>
         <div>
           <div class="load-step micro" id="loadStep">Reading the page…</div>
-          <div class="load-sub micro">Master's · Hard · 5 questions</div>
+          <div class="load-sub micro">${profileSummary()}</div>
         </div>
       </div>`;
     const steps = ["Reading the page…", "Finding key concepts…", "Writing questions…", "Validating quality…"];
     return new Promise(res => {
       let i = 0;
-      const t = setInterval(() => {
+      clearInterval(loadTimer);
+      loadTimer = setInterval(() => {
         i++;
-        if (i < steps.length) document.getElementById('loadStep').textContent = steps[i];
-        else { clearInterval(t); res(); }
+        // A failed load replaces this markup mid-animation; stop rather than
+        // writing into a node that no longer exists.
+        const el = document.getElementById('loadStep');
+        if (!el) { clearInterval(loadTimer); return; }
+        if (i < steps.length) el.textContent = steps[i];
+        else { clearInterval(loadTimer); res(); }
       }, 750);
     });
   }
@@ -508,9 +592,9 @@
         </div>`).join("")}
       <div class="res-actions">
         <button class="btn-ghost" onclick="retry()">↻ Retry</button>
-        <button class="btn-solid" onclick="closePanel(); togglePopup()">New quiz</button>
+        <button class="btn-solid" onclick="quizData = null; showSetup()">New quiz</button>
       </div>
-      <div class="src-note">quiz source: ${quizData.source} · saved to learning history</div>`;
+      <div class="src-note">quiz source: ${quizData.source}</div>`;
   }
   function retry() { idx = 0; score = 0; answered = []; renderQuestion(); }
 </script>
