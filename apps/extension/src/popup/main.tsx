@@ -1,54 +1,79 @@
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
-
-// TODO: port the styling from design/hyris-prototype.html (popup section)
-
-const PERSONAS = ["High School", "Undergrad", "Master's", "Research"] as const;
-const DIFFICULTIES = ["Easy", "Medium", "Hard", "Expert"] as const;
-const COUNTS = [5, 10, 15] as const;
+import { QuizSetup } from "../components/QuizSetup";
+import { usePageProbe } from "../lib/page";
+import { useQuizProfile } from "../lib/prefs";
+import { useTheme } from "../lib/theme";
+import "../styles/theme.css";
+import "../styles/popup.css";
 
 function Popup() {
-  const [persona, setPersona] = useState<string>("Master's");
-  const [difficulty, setDifficulty] = useState<string>("Hard");
-  const [count, setCount] = useState<number>(5);
+  const [theme, toggleTheme] = useTheme();
+  const [profile, updateProfile] = useQuizProfile();
+  const { target, words } = usePageProbe();
   const [busy, setBusy] = useState(false);
 
-  async function generate() {
+  // Docks the panel showing this same setup page — no quiz is generated.
+  function pinPanel() {
+    if (!target) return;
+    void chrome.sidePanel.open({ windowId: target.windowId }).catch(() => {});
+    window.close();
+  }
+
+  function generate() {
+    if (!target) return;
     setBusy(true);
-    const profile = { persona, difficulty, question_count: count };
-    await chrome.runtime.sendMessage({ type: "HYRIS_GENERATE_QUIZ", profile });
-    window.close(); // side panel takes over
+    // Open for the window, not the tab, so the panel stays docked to the right
+    // edge as you move between tabs. Must be first — it needs a live gesture.
+    void chrome.sidePanel.open({ windowId: target.windowId }).catch(() => {});
+    chrome.runtime.sendMessage({ type: "HYRIS_GENERATE_QUIZ", profile, tabId: target.tabId }).then(
+      () => window.close(),
+      () => setBusy(false),
+    );
   }
 
   return (
-    <div style={{ width: 360, padding: 20, fontFamily: "Helvetica Neue, sans-serif" }}>
-      <h1 style={{ fontSize: 17 }}>hyris</h1>
-      <Selector label="Persona" options={PERSONAS} value={persona} onChange={setPersona} />
-      <Selector label="Difficulty" options={DIFFICULTIES} value={difficulty} onChange={setDifficulty} />
-      <Selector label="Questions" options={COUNTS} value={count} onChange={setCount} />
-      <button onClick={generate} disabled={busy} style={{ width: "100%", marginTop: 16, padding: 14, borderRadius: 999 }}>
-        {busy ? "Generating…" : "Generate quiz"}
-      </button>
-    </div>
+    <>
+      <div className="popup-head">
+        <div className="t">hyris<small>Turn this page into a quiz</small></div>
+        <div className="actions">
+          <button className="theme-toggle micro" onClick={toggleTheme} title={`Switch to ${theme === "dark" ? "light" : "dark"}`}>
+            ◐
+          </button>
+          <button
+            className="theme-toggle icon"
+            onClick={pinPanel}
+            disabled={!target}
+            title="Pin this panel to the right"
+            aria-label="Pin this panel to the right"
+          >
+            <PanelRightIcon />
+          </button>
+        </div>
+      </div>
+
+      <div className="popup-body">
+        <QuizSetup
+          profile={profile}
+          onChange={updateProfile}
+          onGenerate={generate}
+          busy={busy}
+          words={words}
+          ready={!!target}
+        />
+      </div>
+    </>
   );
 }
 
-function Selector<T extends string | number>({ label, options, value, onChange }: {
-  label: string; options: readonly T[]; value: T; onChange: (v: T) => void;
-}) {
+function PanelRightIcon() {
   return (
-    <div style={{ marginTop: 14 }}>
-      <div style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.16em", opacity: 0.5 }}>{label}</div>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
-        {options.map((o) => (
-          <button key={String(o)} onClick={() => onChange(o)}
-            style={{ padding: "8px 14px", borderRadius: 999, border: 0, cursor: "pointer",
-                     background: o === value ? "#111114" : "#fff", color: o === value ? "#fff" : "#555" }}>
-            {o}
-          </button>
-        ))}
-      </div>
-    </div>
+    <svg viewBox="0 0 16 16" aria-hidden="true">
+      <rect x="1.25" y="2.75" width="13.5" height="10.5" rx="2.5"
+            fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M10 3.45h2.25A2 2 0 0 1 14.05 5.45v5.1a2 2 0 0 1-2 2H10z"
+            fill="currentColor" />
+    </svg>
   );
 }
 

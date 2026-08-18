@@ -14,15 +14,8 @@
     "service_worker": "src/background/index.ts",
     "type": "module"
   },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["src/content/extract.ts"],
-      "run_at": "document_idle"
-    }
-  ],
-  "permissions": ["activeTab", "sidePanel", "storage"],
-  "host_permissions": ["https://api.hyris.app/*"],
+  "permissions": ["activeTab", "scripting", "sidePanel", "storage"],
+  "host_permissions": ["<all_urls>"],
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",

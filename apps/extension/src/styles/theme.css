@@ -1,0 +1,117 @@
+/* Design tokens + shared atoms, ported from design/hyris-prototype.html. */
+
+:root, [data-theme="light"] {
+  --bg: #c9c9cc;
+  --frame: #17171a;
+  --surface: #e4e4e6;
+  --surface-2: #ececee;
+  --surface-3: #f4f4f5;
+  --line: #d2d2d5;
+  --line-strong: #b8b8bc;
+  --ink: #17171a;
+  --ink-2: #5c5c62;
+  --ink-3: #939398;
+  --pill-bg: #111114;
+  --pill-ink: #ffffff;
+  --ghost-bg: #ffffff;
+  --green: #1f9d60;
+  --green-soft: rgba(31,157,96,.10);
+  --red: #c93b3b;
+  --red-soft: rgba(201,59,59,.08);
+  --shadow: 0 24px 64px rgba(0,0,0,.18);
+  --shadow-soft: 0 8px 28px rgba(0,0,0,.10);
+  --shape: rgba(255,255,255,.5);
+}
+
+[data-theme="dark"] {
+  --bg: #0a0a0c;
+  --frame: #2a2a2e;
+  --surface: #131316;
+  --surface-2: #1a1a1e;
+  --surface-3: #212126;
+  --line: #26262b;
+  --line-strong: #38383e;
+  --ink: #f1f1f2;
+  --ink-2: #a3a3ab;
+  --ink-3: #66666e;
+  --pill-bg: #f1f1f2;
+  --pill-ink: #0a0a0c;
+  --ghost-bg: #1a1a1e;
+  --green: #4ade80;
+  --green-soft: rgba(74,222,128,.10);
+  --red: #f87171;
+  --red-soft: rgba(248,113,113,.10);
+  --shadow: 0 24px 64px rgba(0,0,0,.7);
+  --shadow-soft: 0 8px 28px rgba(0,0,0,.5);
+  --shape: rgba(255,255,255,.03);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: "Helvetica Neue", -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+  background: var(--surface-3);
+  color: var(--ink);
+  transition: background .25s, color .25s;
+}
+
+.micro {
+  font-size: 9.5px; text-transform: uppercase; letter-spacing: .18em; font-weight: 500;
+}
+.mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; }
+
+@keyframes pop { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+
+/* ===== Shared controls ===== */
+.theme-toggle {
+  border: 0; background: var(--ghost-bg); color: var(--ink);
+  padding: 10px 18px; border-radius: 999px; cursor: pointer; font-family: inherit;
+  box-shadow: var(--shadow-soft);
+}
+.theme-toggle:hover { opacity: .8; }
+
+.field-label { color: var(--ink-3); margin: 18px 0 9px; }
+.field-label:first-child { margin-top: 0; }
+
+.seg { display: flex; flex-wrap: wrap; gap: 7px; }
+.chip {
+  border: 0; padding: 9px 15px; border-radius: 999px; text-align: center;
+  font-size: 12px; font-weight: 600; color: var(--ink-2); cursor: pointer;
+  background: var(--ghost-bg); box-shadow: var(--shadow-soft); transition: all .12s;
+  font-family: inherit;
+}
+.chip:hover { color: var(--ink); }
+.chip.sel { background: var(--pill-bg); color: var(--pill-ink); }
+
+.btn-ghost {
+  border: 0; background: var(--ghost-bg); border-radius: 999px; padding: 13px;
+  font-size: 10.5px; font-weight: 700; cursor: pointer; color: var(--ink);
+  font-family: inherit; text-transform: uppercase; letter-spacing: .14em;
+  box-shadow: var(--shadow-soft);
+}
+.btn-ghost:hover { opacity: .8; }
+
+.btn-solid {
+  border: 0; background: var(--pill-bg); color: var(--pill-ink); border-radius: 999px;
+  padding: 13px; font-size: 10.5px; font-weight: 700; cursor: pointer;
+  font-family: inherit; text-transform: uppercase; letter-spacing: .14em;
+  box-shadow: var(--shadow-soft);
+}
+.btn-solid:hover { opacity: .85; }
+
+/* ===== Quiz setup form (popup body and pinned side panel) ===== */
+.gen-btn {
+  width: 100%; margin-top: 24px; background: var(--pill-bg); color: var(--pill-ink);
+  border: 0; border-radius: 999px; padding: 16px; font-size: 12px; font-weight: 700;
+  cursor: pointer; font-family: inherit; text-transform: uppercase; letter-spacing: .16em;
+  transition: opacity .12s; box-shadow: var(--shadow-soft);
+}
+.gen-btn:hover { opacity: .85; }
+.gen-btn:disabled { opacity: .55; cursor: default; }
+
+.page-detect {
+  display: flex; align-items: center; gap: 8px; margin-top: 16px;
+  color: var(--ink-3); justify-content: center;
+}
+.page-detect .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+.page-detect.none .dot { background: var(--ink-3); }

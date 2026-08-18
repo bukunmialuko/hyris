@@ -1,0 +1,25 @@
+/* Popup surface, ported from design/hyris-prototype.html (.popup section). */
+
+body {
+  width: 376px;
+  background: var(--surface-3);
+  animation: pop .18s ease-out;
+}
+
+.popup-head {
+  display: flex; align-items: center; justify-content: space-between; padding: 22px 24px 0;
+}
+.popup-head .t { font-size: 17px; font-weight: 700; letter-spacing: -.02em; }
+.popup-head .actions { display: flex; align-items: center; gap: 8px; }
+.popup-head .t small {
+  display: block; font-size: 9.5px; color: var(--ink-3); font-weight: 500;
+  margin-top: 5px; text-transform: uppercase; letter-spacing: .16em;
+}
+
+.popup-body { padding: 20px 24px 24px; }
+
+
+/* Square variant of the head pill, for glyph-free icon buttons. */
+.theme-toggle.icon { display: flex; align-items: center; justify-content: center; padding: 9px 16px; }
+.theme-toggle.icon svg { display: block; width: 14px; height: 14px; }
+.theme-toggle:disabled { opacity: .45; cursor: default; }
