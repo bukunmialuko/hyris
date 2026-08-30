@@ -189,6 +189,12 @@ source of truth. One tool (`clean_page`) and three memory layers: graph checkpoi
 attempt history, and a learner profile that adapts difficulty over time. No web search, no
 RAG, no microservices.
 
+**Orchestration pattern:** an evaluator-optimizer workflow with parallel fan-out — prompt
+chaining for analyze, plan, generate; a generate-critique-repair loop for quality; code owns
+the control flow and the LLM fills in content. Not ReAct: the model never decides the next
+step. The V2 fact-check button is the planned exception, a ReAct-style agent embedded as a
+single node.
+
 ## License
 
 MIT © 2026 Oluwabukunmi Aluko — see [LICENSE](LICENSE).
