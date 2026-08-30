@@ -112,6 +112,53 @@ flowchart TB
   WM --> DONE
 ```
 
+## Graph state
+
+Every node reads from and writes to one shared typed state. The parallel branches write
+different keys, so the fan-in needs no reducers.
+
+| Field | What it holds | Written by |
+|---|---|---|
+| `page_url` | The only input from the extension, plus profile settings | input |
+| `learner_context` | Mastered concepts, weak concepts, recent question hashes | `load_memory` |
+| `clean_text`, `title`, `truncated` | Boilerplate-free article, capped at 6k words | `clean_page` |
+| `concepts` | Quiz-worthy concepts with salience and verbatim supporting spans | `analyze_page` |
+| `sufficiency`, `max_supportable` | Can the page support the request, and how far | `analyze_page` |
+| `final_count`, `note` | `min(requested, cap 20, supportable)` and the user-facing note | `adjust_scope` |
+| `blueprint` | Slots: concept, Bloom level, variant flag | `plan_quiz` |
+| `questions`, `pending_slots`, `feedback` | Generated questions and the repair queue | `generate_questions`, gate, critic |
+| `round`, `gen_retries` | Loop bounds: max 2 repair rounds, max 2 schema retries | gate, critic |
+| `quiz` | The final contract-shaped quiz | `finalize_quiz` |
+| `error` | User-safe message when a run ends gracefully | any guard or tool |
+
+## Memory model
+
+Three layers, one Postgres instance:
+
+| Layer | Kind | Backed by | What it does |
+|---|---|---|---|
+| Graph checkpoints | Thread | LangGraph `PostgresSaver` | Every node transition saved per run: resumable, debuggable, ready for human-in-the-loop |
+| Quiz and attempt history | Episodic | `quizzes`, `quiz_attempts` tables | Powers "never repeat a question" and per-page quiz recall |
+| Learner profile | Semantic | LangGraph `PostgresStore` | Per-concept mastery (EMA over attempts) that drives adaptive difficulty over time |
+
+The loop closes on every attempt: correct answers raise a concept's mastery, wrong answers
+lower it, and the next quiz on that topic plans around what changed.
+
+## Guardrails
+
+All safety checks **fail closed**: if a check cannot run, the run ends gracefully — no quiz
+ever ships unchecked.
+
+| Stage | Guard | What it blocks |
+|---|---|---|
+| Before fetch | SSRF guard | Private, loopback, link-local and cloud-metadata addresses |
+| Pre-agent | `guard_input` moderation | Pages with self-harm, sexual content involving minors, extremism, weapons instructions — refused before any LLM sees them |
+| In every prompt | Injection hardening | Article text is delimited as untrusted data, never instructions |
+| During generation | Schema gate + critic | Malformed questions, wrong answer keys, ungrounded or ambiguous questions |
+| Post-agent | `guard_output` moderation | Any unsafe generated question, dropped before delivery |
+
+Deferred to the API port: rate limiting, per-user cost caps, auth.
+
 ## Quiz planning
 
 The number of questions delivered is `min(requested, hard cap of 20, what the page supports)`.
