@@ -1,8 +1,16 @@
 # Hyris
 
-Turn any web page into an AI-generated quiz. Read → click → quiz in the side panel.
+Turn any web page into a personalized quiz. V1 is a LangGraph agent that plans, generates, critiques and adapts, grounded strictly in the current page, with three layers of memory.
 
-**[Live prototype →](https://bukunmialuko.github.io/hyris/)** — interactive walkthrough of the extension UI, no install required.
+▶️ **[Try the live prototype](https://bukunmialuko.github.io/hyris/)** (no install required)
+
+
+| Aspect | V1 |
+|---|---|
+| Source of truth | The current page only |
+| Orchestration | LangGraph with a Postgres checkpointer |
+| Memory | Graph checkpoints, quiz and attempt history, learner profile |
+| Tools | `clean_page` in V1, fact-check button later |
 
 ## Structure
 
@@ -30,21 +38,109 @@ uvicorn app.main:app --reload
 docker compose up -d
 ```
 
-## The contract
+## Agent research environment
 
-`packages/contracts/quiz.schema.json` defines the quiz shape. The extension consumes it,
-the API produces it. During development the extension can point at
-`packages/contracts/fixtures/hyris-quiz.json` (e.g. via a GitHub raw URL) instead of the API.
+The `research/` notebooks use a conda env:
 
-## Prototype deploy
+```bash
+conda create -n agents python=3.11 -y
+conda activate agents
+pip install -r research/requirements.txt
+```
 
-`.github/workflows/pages.yml` publishes `design/hyris-prototype.html` to GitHub Pages as the
-site root. It redeploys on every push to `main` that touches the prototype, and can be run
-manually from the Actions tab.
+## System design
+
+```mermaid
+flowchart LR
+  CHROME["🌐 Chrome Extension<br/>popup · quiz side panel"]
+  API["⚡ FastAPI<br/>async API · streams progress"]
+  AGENT["🕸️ Quiz Agent<br/>LangGraph"]
+  TOOL["🧹 clean_page<br/>fetches the page · strips boilerplate"]
+  LLM["✨ OpenAI<br/>LLM · swappable"]
+  DB[("🐘 Postgres<br/>checkpoints · history · learner profile")]
+
+  CHROME == "url + profile" ==> API
+  API -. "live status · finished quiz" .-> CHROME
+  CHROME -- "answers" --> API
+  API ==> AGENT
+  AGENT --- TOOL
+  AGENT <--> LLM
+  AGENT <--> DB
+  API -- "attempts · mastery" --> DB
+```
+
+Generation is asynchronous. The extension receives a `run_id` immediately and subscribes to
+progress updates, because an LLM pipeline can take 30 to 90 seconds, longer than MV3 service
+workers or plain HTTP requests reliably survive. The LangGraph runtime lives inside the
+FastAPI process as a single deployable, but it is kept as a separate module so it can be
+split out later.
+
+## Agent graph
+
+The LangGraph workflow fans out in parallel from START: the memory read runs while the page
+is fetched, and the branches meet at plan_quiz. Tools never raise; failures route to a
+graceful exit. Safety guardrails run as first-class nodes: an SSRF check
+before any fetch, input moderation before the article reaches an LLM, and output moderation
+of every question before delivery — all fail closed, so nothing unsafe ever ships.
+
+```mermaid
+flowchart TB
+  START(["START"]) --> LM["load_memory<br/>learner profile + recent quizzes"]
+  START --> CLEAN["🧹 clean_page<br/>fetch url · strip boilerplate"]
+  CLEAN --> OK{"ok?"}
+  OK -- "fetch failed" --> FAIL["end_gracefully<br/>stream error to side panel"]
+  FAIL --> DONE(["END"])
+  OK -- "yes" --> GI["🛡️ guard_input<br/>moderate article · fail closed"]
+  GI -- "unsafe" --> FAIL
+  GI -- "safe" --> AP["analyze_page<br/>concepts · sufficiency"]
+  AP --> SUFF{"enough substance?"}
+  SUFF -- "no" --> ADJ["adjust_scope<br/>final = min(requested, cap, supportable)"]
+  SUFF -- "yes" --> PLAN
+  ADJ --> PLAN["plan_quiz<br/>fan-in: blueprint from concepts + memory"]
+  LM --> PLAN
+  PLAN --> GENQ["generate_questions<br/>one per blueprint slot"]
+  GENQ --> GATE{"schema valid?"}
+  GATE -- "invalid, max 2 retries" --> GENQ
+  GATE -- "valid" --> CRIT["critique_questions<br/>verdict per question vs article"]
+  CRIT --> VERDICT{"all pass or round == 2?"}
+  VERDICT -- "failures" --> REGEN["repair_questions<br/>failed slots only, with feedback"]
+  REGEN --> GATE
+  VERDICT -- "done" --> FIN["finalize_quiz<br/>assemble · persist"]
+  FIN --> GO["🛡️ guard_output<br/>moderate every question · fail closed"]
+  GO -- "unsafe" --> FAIL
+  GO -- "safe" --> WM["write_memory<br/>update learner profile"]
+  WM --> DONE
+```
+
+## Quiz planning
+
+The number of questions delivered is `min(requested, hard cap of 20, what the page supports)`.
+The planner ranks concepts by the learner's history: weak concepts come first, new material
+next, mastered concepts last and one Bloom level harder. When the page has fewer concepts
+than requested questions, the planner reuses rich concepts at other Bloom levels (define it,
+apply it, analyze it) before shrinking the quiz — and it never pads with trivia. The user is
+told only when the delivered count falls notably short.
+
+Example: 6 questions requested from 3 concepts, difficulty hard, with one weak and one
+mastered concept in memory:
+
+| Slot | Concept              | Bloom level | Why                          |
+|------|----------------------|-------------|------------------------------|
+| 0    | multi-head attention | analyse     | weak concept, retest first   |
+| 1    | positional encoding  | analyse     | new material                 |
+| 2    | self-attention       | evaluate    | mastered, bumped harder      |
+| 3    | multi-head attention | evaluate    | variant, next Bloom level    |
+| 4    | positional encoding  | evaluate    | variant                      |
+| 5    | self-attention       | apply       | variant                      |
+
+Every slot is a unique concept and Bloom level pair, so questions stay distinct.
 
 ## V1 scope
 
-Chrome Extension + FastAPI + LLM + PostgreSQL. No RAG, no vector DB, no microservices.
+Chrome Extension + FastAPI + LangGraph agent + LLM + PostgreSQL. The current page is the only
+source of truth. One tool (`clean_page`) and three memory layers: graph checkpoints, quiz and
+attempt history, and a learner profile that adapts difficulty over time. No web search, no
+RAG, no microservices.
 
 ## License
 
