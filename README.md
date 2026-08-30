@@ -12,6 +12,19 @@ Turn any web page into a personalized quiz. V1 is a LangGraph agent that plans, 
 | Memory | Graph checkpoints, quiz and attempt history, learner profile |
 | Tools | `clean_page` in V1, fact-check button later |
 
+## Orchestration patterns
+
+Code owns the control flow; the LLM fills in content. Of the classic
+[agent workflow patterns](https://www.anthropic.com/engineering/building-effective-agents),
+V1 composes three — deliberately stopping short of an autonomous agent:
+
+| Pattern | Where it lives in Hyris |
+|---|---|
+| Prompt chaining | The backbone: `analyze_page` → `plan_quiz` → `generate_questions`, each step consuming the last one's structured output |
+| Parallelization | The START fan-out: `load_memory` runs while the page is fetched and cleaned; branches meet at `plan_quiz` |
+| Evaluator-optimizer | The signature loop: `generate_questions` optimizes, `critique_questions` evaluates, repair feeds verdicts back (max 2 rounds) |
+| ReAct agent | Not in V1 — reserved for the V2 fact-check button, embedded as a single node |
+
 ## Structure
 
 ```
@@ -29,14 +42,38 @@ docs/             Architecture notes
 npm install
 npm run dev:ext          # then load apps/extension/dist as unpacked extension
 
-# API
+# API (copy .env.example to .env and set OPENAI_API_KEY first)
 cd apps/api
 pip install -e ".[dev]"
 uvicorn app.main:app --reload
 
-# Local Postgres
-docker compose up -d
+# Or run everything in Docker (API + Postgres)
+docker compose up --build
+
+# Tests (no API key needed — the suite runs on a fake LLM)
+cd apps/api && pytest
 ```
+
+## Trying the API (Postman or curl)
+
+Generation is asynchronous: start a run, then poll or stream.
+
+```bash
+# 1. Start a run — returns 202 with a run_id
+curl -X POST http://localhost:8000/quiz/generate \
+  -H "Content-Type: application/json" \
+  -d '{"page_url": "https://en.wikipedia.org/wiki/Photosynthesis",
+       "profile": {"question_count": 4, "difficulty": "medium"}}'
+
+# 2a. Poll until status is done (Postman-friendly)
+curl http://localhost:8000/quiz/runs/<run_id>
+
+# 2b. Or stream progress live (SSE)
+curl -N http://localhost:8000/quiz/runs/<run_id>/events
+```
+
+The poll response carries `status` (running, done, failed), the `steps` completed so far,
+and the final `quiz` or a user-safe `error`.
 
 ## Agent research environment
 
@@ -187,13 +224,7 @@ Every slot is a unique concept and Bloom level pair, so questions stay distinct.
 Chrome Extension + FastAPI + LangGraph agent + LLM + PostgreSQL. The current page is the only
 source of truth. One tool (`clean_page`) and three memory layers: graph checkpoints, quiz and
 attempt history, and a learner profile that adapts difficulty over time. No web search, no
-RAG, no microservices.
-
-**Orchestration pattern:** an evaluator-optimizer workflow with parallel fan-out — prompt
-chaining for analyze, plan, generate; a generate-critique-repair loop for quality; code owns
-the control flow and the LLM fills in content. Not ReAct: the model never decides the next
-step. The V2 fact-check button is the planned exception, a ReAct-style agent embedded as a
-single node.
+RAG, no microservices. In one phrase: an evaluator-optimizer workflow with parallel fan-out.
 
 ## License
 
