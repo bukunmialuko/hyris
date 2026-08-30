@@ -1,0 +1,8 @@
+langgraph>=0.2
+langchain-core>=0.3
+langchain-openai>=0.2
+openai>=1.50
+python-dotenv>=1.0
+jupyter
+grandalf
+trafilatura
