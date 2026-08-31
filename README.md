@@ -32,10 +32,25 @@ apps/extension    Chrome extension (MV3, React + Vite + TS)
 apps/api          FastAPI backend (agents: generate → critique → validate)
 packages/contracts  Shared quiz JSON schema + fixtures (single source of truth)
 design/           Interactive HTML prototype (deployed to GitHub Pages)
+research/         Jupyter notebooks for agent prototyping
 docs/             Architecture notes
 ```
 
-## Quick start
+## Local development
+
+One conda env covers all the Python here — the API, its dev tooling, and the `research/`
+notebooks. Create it once, then just `conda activate agents` whenever you work on Hyris:
+
+```bash
+conda create -n agents python=3.11 -y
+conda activate agents
+pip install -e "apps/api[dev]" -r research/requirements.txt
+```
+
+`-e` installs the API in editable mode, so `import app.…` resolves to your working tree and
+code changes take effect without reinstalling. `[dev]` adds pytest, httpx and ruff.
+
+Then, with the env active:
 
 ```bash
 # Extension
@@ -43,16 +58,35 @@ npm install
 npm run dev:ext          # then load apps/extension/dist as unpacked extension
 
 # API (copy .env.example to .env and set OPENAI_API_KEY first)
-cd apps/api
-pip install -e ".[dev]"
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --app-dir apps/api
 
-# Or run everything in Docker (API + Postgres)
+# Or run everything in Docker (API + Postgres) — no conda env needed
 docker compose up --build
 
 # Tests (no API key needed — the suite runs on a fake LLM)
-cd apps/api && pytest
+pytest apps/api
+
+# Lint
+ruff check apps/api
 ```
+
+### Editor setup
+
+[.vscode/settings.json](.vscode/settings.json) is committed and wires up the rest: it points
+Pylance at the `agents` env, puts `apps/api` on the analysis path, enables pytest discovery,
+and applies ruff fixes on save. Install the three recommended extensions when VSCode offers
+them (Python, Pylance, Ruff).
+
+Two things to know:
+
+- The interpreter path in that file is `/opt/homebrew/anaconda3/envs/agents/bin/python`. If
+  your conda lives elsewhere, run `conda run -n agents which python` and update it — or just
+  use **Python: Select Interpreter** and pick `agents`.
+- If imports still show as unresolved, the env isn't selected. Check the interpreter in the
+  status bar with a `.py` file open, then **Developer: Reload Window**.
+
+Ruff's rules live in [apps/api/pyproject.toml](apps/api/pyproject.toml) under `[tool.ruff]`,
+so the CLI and the editor always agree.
 
 ## Trying the API (Postman or curl)
 
@@ -74,16 +108,6 @@ curl -N http://localhost:8000/quiz/runs/<run_id>/events
 
 The poll response carries `status` (running, done, failed), the `steps` completed so far,
 and the final `quiz` or a user-safe `error`.
-
-## Agent research environment
-
-The `research/` notebooks use a conda env:
-
-```bash
-conda create -n agents python=3.11 -y
-conda activate agents
-pip install -r research/requirements.txt
-```
 
 ## System design
 
