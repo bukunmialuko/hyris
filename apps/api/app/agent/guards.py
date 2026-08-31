@@ -1,6 +1,6 @@
 """Safety middleware: input and output moderation. All checks FAIL CLOSED."""
 
-from typing import Callable
+from collections.abc import Callable
 
 BLOCK_MESSAGE = "This page isn't suitable for quiz generation."
 UNAVAILABLE_MESSAGE = "Safety check unavailable, please try again."

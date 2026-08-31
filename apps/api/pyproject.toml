@@ -29,5 +29,17 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["app*"]
 
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# E/W pycodestyle, F pyflakes, I import sorting, UP pyupgrade, B bugbear.
+select = ["E", "W", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Star-imports and unused fixtures are idiomatic in tests.
+"tests/*" = ["F403", "F405"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
