@@ -1,0 +1,32 @@
+{
+  // Everything Python lives in the `agents` conda env — see README "Local development".
+  // Change this path if your conda lives elsewhere: `conda run -n agents which python`.
+  "python.defaultInterpreterPath": "/opt/homebrew/anaconda3/envs/agents/bin/python",
+
+  // hyris-api is installed editable via setuptools' import-hook .pth, which Pylance can't
+  // follow statically — this is what makes `from app.… import` resolve.
+  "python.analysis.extraPaths": ["apps/api"],
+  "python.analysis.typeCheckingMode": "basic",
+  // QuizState is `TypedDict, total=False` so LangGraph nodes can return partial updates.
+  // That makes every read (`state["user_id"]`) look unsafe to Pylance — deliberate, not a bug.
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportTypedDictNotRequiredAccess": "none"
+  },
+  "python.analysis.autoImportCompletions": true,
+
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": ["apps/api"],
+
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    // Off by default: `ruff format` would reformat 11 existing files on first save.
+    // Flip to true (and run `ruff format apps/api` once) if you want that.
+    "editor.formatOnSave": false,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports.ruff": "explicit",
+      "source.fixAll.ruff": "explicit"
+    }
+  },
+  "python-envs.defaultEnvManager": "ms-python.python:conda",
+  "python-envs.defaultPackageManager": "ms-python.python:conda"
+}
