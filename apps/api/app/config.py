@@ -1,5 +1,6 @@
 """Central settings — no magic numbers in node code."""
 
+import re
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -33,3 +34,18 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+# SQLAlchemy spells a URL "postgresql+psycopg://…"; libpq rejects the "+driver" suffix, and also
+# rejects a non-lowercase scheme — so lowercase what we rewrite rather than echoing the input's case.
+_DIALECT = re.compile(r"^(postgres(?:ql)?)\+[a-z0-9_]+://", re.IGNORECASE)
+
+
+def normalize_dsn(url: str) -> str:
+    """A DATABASE_URL as libpq will parse it. SQLAlchemy keeps the "+psycopg" form; psycopg cannot."""
+    return _DIALECT.sub(lambda m: f"{m.group(1).lower()}://", url.strip())
+
+
+def postgres_dsn() -> str:
+    """The libpq DSN for the LangGraph store, or "" when persistence is switched off."""
+    return normalize_dsn(get_settings().database_url)

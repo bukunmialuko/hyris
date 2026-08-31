@@ -11,6 +11,13 @@ from app.services.runs import registry
 router = APIRouter()
 
 _graph = None
+_store = None      # installed by the app lifespan; None means build_graph's in-memory default
+
+
+def set_store(store) -> None:
+    """Called once by the app lifespan with the store this process actually got."""
+    global _graph, _store
+    _graph, _store = None, store
 
 
 def get_graph():
@@ -19,7 +26,7 @@ def get_graph():
     if _graph is None:
         from app.agent.graph import build_graph
 
-        _graph = build_graph()
+        _graph = build_graph(store=_store)
     return _graph
 
 

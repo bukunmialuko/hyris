@@ -4,12 +4,22 @@ All reads degrade to an empty context — memory is an enhancement, not a depend
 """
 
 import hashlib
+import logging
 from urllib.parse import urlparse
 
 from langgraph.store.base import BaseStore
 
 from app.agent.state import LearnerContext
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+# store.search() defaults to limit=10, and BOTH backends apply the limit before returning, in their
+# own order (InMemoryStore insertion-order, PostgresStore updated_at DESC). So fetch a generous
+# window and decide "most recent" here, where it is explicit and backend-agnostic.
+MASTERY_SCAN = 500      # concepts scanned when classifying mastered/weak
+HISTORY_SCAN = 1000     # quiz_history rows pulled before the newest-first sort
+RECENT_HASHES = 100     # question hashes handed to the planner
 
 
 def qhash(question: str) -> str:
@@ -25,8 +35,8 @@ def load_learner_context(store: BaseStore, user_id: str, page_url: str) -> Learn
     s = get_settings()
     try:
         domain = urlparse(str(page_url)).netloc
-        mastered, weak, hashes = [], [], []
-        for item in store.search(("users", user_id, "mastery")):
+        mastered, weak = [], []
+        for item in store.search(("users", user_id, "mastery"), limit=MASTERY_SCAN):
             rec = item.value
             if rec["seen"] < s.min_seen:
                 continue
@@ -34,13 +44,19 @@ def load_learner_context(store: BaseStore, user_id: str, page_url: str) -> Learn
                 mastered.append(item.key)
             elif rec["score"] <= s.weak_at:
                 weak.append(item.key)
-        for item in store.search(("users", user_id, "quiz_history")):
-            if item.value["domain"] == domain:
-                hashes.extend(item.value["question_hashes"])
-        return LearnerContext(
-            mastered_concepts=mastered, weak_concepts=weak, recent_question_hashes=hashes[-100:]
+        # Filter by domain in the query, not in Python: otherwise the limit truncates across every
+        # domain first. Then sort explicitly — neither backend's own order is load-bearing.
+        history = sorted(
+            store.search(("users", user_id, "quiz_history"), filter={"domain": domain}, limit=HISTORY_SCAN),
+            key=lambda item: item.updated_at,
+            reverse=True,
         )
-    except Exception:  # noqa: BLE001 — resilience boundary
+        hashes = [h for item in history for h in item.value["question_hashes"]]
+        return LearnerContext(
+            mastered_concepts=mastered, weak_concepts=weak, recent_question_hashes=hashes[:RECENT_HASHES]
+        )
+    except Exception as e:  # noqa: BLE001 — resilience boundary
+        logger.warning("learner memory unavailable (%s): %s", type(e).__name__, e)
         return empty_context()
 
 
@@ -56,8 +72,8 @@ def record_quiz(store: BaseStore, user_id: str, page_url: str, quiz: dict) -> No
                 "question_hashes": [qhash(q["question"]) for q in quiz["questions"]],
             },
         )
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001 — resilience boundary
+        logger.warning("learner memory write dropped (%s): %s", type(e).__name__, e)
 
 
 def update_mastery(store: BaseStore, user_id: str, concept: str, correct: bool) -> dict:

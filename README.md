@@ -8,7 +8,7 @@ Turn any web page into a personalized quiz. V1 is a LangGraph agent that plans, 
 | Aspect | V1 |
 |---|---|
 | Source of truth | The current page only |
-| Orchestration | LangGraph with a Postgres checkpointer |
+| Orchestration | LangGraph (Postgres checkpointer planned; see Memory model) |
 | Memory | Graph checkpoints, quiz and attempt history, learner profile |
 | Tools | `clean_page` in V1, fact-check button later |
 
@@ -59,6 +59,13 @@ npm run dev:ext          # then load apps/extension/dist as unpacked extension
 
 # API (copy .env.example to .env and set OPENAI_API_KEY first)
 uvicorn app.main:app --reload --app-dir apps/api
+
+# Learner profiles survive restarts only when DATABASE_URL is set (see .env.example):
+#   docker compose up -d db
+#   export DATABASE_URL=postgresql://hyris:hyris@localhost:5433/hyris
+# Leave it unset and the API logs a warning and keeps learner memory in-process.
+# Caveat: with DATABASE_URL set and Postgres NOT running, the API refuses to start — and under
+# --reload uvicorn does not exit, so it hangs instead of aborting. Start the db, or unset the var.
 
 # Or run everything in Docker (API + Postgres) — no conda env needed
 docker compose up --build
@@ -118,7 +125,7 @@ flowchart LR
   AGENT["🕸️ Quiz Agent<br/>LangGraph"]
   TOOL["🧹 clean_page<br/>fetches the page · strips boilerplate"]
   LLM["✨ OpenAI<br/>LLM · swappable"]
-  DB[("🐘 Postgres<br/>checkpoints · history · learner profile")]
+  DB[("🐘 Postgres<br/>learner profile · quiz history")]
 
   CHROME == "url + profile" ==> API
   API -. "live status · finished quiz" .-> CHROME
@@ -194,13 +201,15 @@ different keys, so the fan-in needs no reducers.
 
 ## Memory model
 
-Three layers, one Postgres instance:
+Three layers, one Postgres instance. **Only the learner profile is wired today** — with
+`DATABASE_URL` set, the app lifespan opens one `PostgresStore`, runs its migrations once, and closes
+it on shutdown, so mastery and quiz history survive a restart. The other two rows are planned.
 
-| Layer | Kind | Backed by | What it does |
+| Layer | Kind | Backed by | Status |
 |---|---|---|---|
-| Graph checkpoints | Thread | LangGraph `PostgresSaver` | Every node transition saved per run: resumable, debuggable, ready for human-in-the-loop |
-| Quiz and attempt history | Episodic | `quizzes`, `quiz_attempts` tables | Powers "never repeat a question" and per-page quiz recall |
-| Learner profile | Semantic | LangGraph `PostgresStore` | Per-concept mastery (EMA over attempts) that drives adaptive difficulty over time |
+| Graph checkpoints | Thread | LangGraph `PostgresSaver` | **Planned** — still `MemorySaver`, so runs do not survive a restart |
+| Quiz and attempt history | Episodic | `quizzes`, `quiz_attempts` tables | **Planned** — tables defined in `models/entities.py`, not yet connected |
+| Learner profile | Semantic | LangGraph `PostgresStore` | **Live** — per-concept mastery (EMA) and per-domain question history, persisted |
 
 The loop closes on every attempt: correct answers raise a concept's mastery, wrong answers
 lower it, and the next quiz on that topic plans around what changed.

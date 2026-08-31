@@ -1,7 +1,9 @@
 """Graph wiring — the reference implementation of the design's agent graph.
 
 build_graph() takes its backends as arguments (dependency injection): tests pass
-MemorySaver/InMemoryStore and a fake LLM; production passes the Postgres pair.
+MemorySaver/InMemoryStore and a fake LLM; the API passes the PostgresStore its lifespan opened
+(app/services/persistence.py). build_graph() opens nothing and never reads DATABASE_URL, so an
+unconfigured caller always gets an isolated in-memory store.
 """
 
 from langgraph.checkpoint.memory import MemorySaver

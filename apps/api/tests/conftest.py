@@ -1,11 +1,16 @@
 """Test doubles: a deterministic fake LLM, fake moderation, and a fake fetched page.
 
-No test in this suite touches the network or needs an API key.
+No test in this suite touches the network or a database, or needs an API key.
 """
 
+import os
 import re
 
 import pytest
+
+# Blank DATABASE_URL before any Settings() is built. An env var set to the empty string outranks a
+# .env value in pydantic-settings, so a developer's local database cannot leak into the suite.
+os.environ["DATABASE_URL"] = ""
 
 ARTICLE = (
     "The transformer replaces recurrence with self-attention, letting every token attend to "
