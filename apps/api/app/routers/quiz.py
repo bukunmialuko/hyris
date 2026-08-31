@@ -5,7 +5,7 @@ import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.schemas.quiz import GenerateRequest, RunCreated, RunStatus
+from app.schemas.quiz import GenerateRequest, Quiz, RunCreated, RunStatus
 from app.services.runs import registry
 
 router = APIRouter()
@@ -48,7 +48,11 @@ async def run_status(run_id: str) -> RunStatus:
     if run is None:
         raise HTTPException(404, "Unknown run_id")
     return RunStatus(
-        run_id=run.run_id, status=run.status, steps=run.steps, quiz=run.quiz, error=run.error
+        run_id=run.run_id,
+        status=run.status,
+        steps=run.steps,
+        quiz=Quiz.model_validate(run.quiz) if run.quiz else None,
+        error=run.error,
     )
 
 

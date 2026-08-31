@@ -1,8 +1,11 @@
 """Pydantic models for the API boundary, mirroring packages/contracts/quiz.schema.json."""
 
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+# The only three states a run can be in — shared with app.services.runs.
+RunState = Literal["running", "done", "failed"]
 
 EducationLevel = Literal["high_school", "undergraduate", "masters", "research"]
 Difficulty = Literal["easy", "medium", "hard", "expert"]
@@ -34,7 +37,7 @@ class QuizQuestion(BaseModel):
     question: str
     options: list[str] = Field(min_length=4, max_length=4)
     correct_answer: int = Field(ge=0, le=3)
-    explanation: Optional[str] = None
+    explanation: str | None = None
 
 
 class Quiz(BaseModel):
@@ -47,7 +50,7 @@ class Quiz(BaseModel):
 
 class RunStatus(BaseModel):
     run_id: str
-    status: Literal["running", "done", "failed"]
+    status: RunState
     steps: list[str] = []
-    quiz: Optional[Quiz] = None
-    error: Optional[str] = None
+    quiz: Quiz | None = None
+    error: str | None = None

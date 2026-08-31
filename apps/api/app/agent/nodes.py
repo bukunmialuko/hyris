@@ -7,7 +7,15 @@ import uuid
 from typing import TypedDict
 
 from app.agent.prompts import ANALYZE_SYS, CRIT_SYS, GEN_SYS, wrap_article
-from app.agent.state import BASE_BLOOM, BLOOM_LADDER, Concept, LearnerContext, QuizQuestion, Slot
+from app.agent.state import (
+    BASE_BLOOM,
+    BLOOM_LADDER,
+    Concept,
+    LearnerContext,
+    QuizQuestion,
+    QuizState,
+    Slot,
+)
 from app.agent.tools.memory import qhash
 from app.config import get_settings
 
@@ -41,7 +49,7 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip().lower()
 
 
-def analyze_page(llm, clean_text: str, title: str, requested: int) -> dict:
+def analyze_page(llm, clean_text: str, title: str, requested: int) -> QuizState:
     """Concepts + sufficiency. Never raises; failures return {'error': ...}."""
     try:
         out: PageAnalysis = llm.with_structured_output(PageAnalysis).invoke(
@@ -70,7 +78,7 @@ def analyze_page(llm, clean_text: str, title: str, requested: int) -> dict:
 # ---------------------------------------------------------------- adjust_scope (pure)
 
 
-def adjust_scope(requested: int, max_supportable: int) -> dict:
+def adjust_scope(requested: int, max_supportable: int) -> QuizState:
     s = get_settings()
     final = max(0, min(int(requested), s.hard_cap, int(max_supportable)))
     if final == 0:

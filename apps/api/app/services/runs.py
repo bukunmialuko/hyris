@@ -8,11 +8,13 @@ import asyncio
 import uuid
 from dataclasses import dataclass, field
 
+from app.schemas.quiz import RunState
+
 
 @dataclass
 class Run:
     run_id: str
-    status: str = "running"                       # running | done | failed
+    status: RunState = "running"
     steps: list[str] = field(default_factory=list)
     quiz: dict | None = None
     error: str | None = None
