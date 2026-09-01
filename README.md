@@ -83,6 +83,10 @@ pytest apps/api
 
 # Lint
 ruff check apps/api
+
+# Prune aged-out checkpoints and quizzes (a scheduled command, not a background timer).
+# Retention is CHECKPOINT_RETENTION_DAYS / QUIZ_RETENTION_DAYS; 0 disables either.
+cd apps/api && python -m app.prune
 ```
 
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs the same checks on every push and PR:

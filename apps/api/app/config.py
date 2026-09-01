@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     # false once every client registers a device token, and the header stops being trusted.
     allow_header_identity: bool = True
 
+    # retention (days). Nothing prunes itself: checkpoints grow one thread per run forever, and
+    # quiz history one row per quiz. 0 disables pruning for that table.
+    checkpoint_retention_days: int = 30
+    quiz_retention_days: int = 365
+
     # pipeline limits
     hard_cap: int = 20                 # absolute max questions per quiz
     max_words: int = 6000              # article words reaching the LLM
