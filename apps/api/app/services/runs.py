@@ -5,10 +5,17 @@ swap the registry for Redis or read progress straight from the Postgres checkpoi
 """
 
 import asyncio
+import logging
 import uuid
 from dataclasses import dataclass, field
 
 from app.schemas.quiz import RunState
+
+logger = logging.getLogger(__name__)
+
+# Long enough for a generation already past its LLM calls to land, short enough that a wedged run
+# cannot hold shutdown open indefinitely.
+DRAIN_TIMEOUT = 30.0
 
 
 @dataclass
@@ -24,6 +31,10 @@ class Run:
 class RunRegistry:
     def __init__(self) -> None:
         self._runs: dict[str, Run] = {}
+        # Strong references to the in-flight tasks. asyncio only holds a weak one, so an untracked
+        # create_task can be garbage-collected mid-run; and without the set there is nothing for
+        # shutdown to wait on, so Ctrl-C used to discard a whole generation silently.
+        self._tasks: set[asyncio.Task] = set()
 
     def get(self, run_id: str) -> Run | None:
         return self._runs.get(run_id)
@@ -31,8 +42,27 @@ class RunRegistry:
     async def start(self, graph, inputs: dict) -> Run:
         run = Run(run_id=f"run_{uuid.uuid4().hex[:12]}")
         self._runs[run.run_id] = run
-        asyncio.create_task(self._execute(graph, inputs, run))
+        task = asyncio.create_task(self._execute(graph, inputs, run))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         return run
+
+    async def drain(self, timeout: float = DRAIN_TIMEOUT) -> None:
+        """Let in-flight runs finish before the process tears its backends down.
+
+        Called by the app lifespan on shutdown. uvicorn drains HTTP requests but knows nothing about
+        these background tasks, so without this a Ctrl-C mid-generation loses the run -- including
+        the memory and quiz rows it was about to write -- with no log line.
+        """
+        if not self._tasks:
+            return
+        logger.info("waiting for %d in-flight run(s) to finish", len(self._tasks))
+        done, pending = await asyncio.wait(set(self._tasks), timeout=timeout)
+        for task in pending:
+            # Past the deadline the backends are about to close under them anyway; cancelling is
+            # tidier than letting them fail on a shut connection.
+            logger.warning("run did not finish within %ss, cancelling", timeout)
+            task.cancel()
 
     async def _execute(self, graph, inputs: dict, run: Run) -> None:
         config = {"configurable": {"thread_id": run.run_id}}

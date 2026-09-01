@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import deps
 from app.routers import attempts, history, quiz
 from app.services.persistence import checkpointer_lifespan, engine_lifespan, store_lifespan
+from app.services.runs import registry
 
 # uvicorn configures only the uvicorn* loggers and leaves root at WARNING with no handler, so app.*
 # records would vanish — including the line saying persistence is live. Scoped to this app's tree on
@@ -40,7 +41,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             quiz.set_checkpointer(checkpointer)
             deps.set_store(store)
             deps.set_sessions(sessions)
-            yield
+            try:
+                yield
+            finally:
+                # Before the backends close: a run still writing its quiz row needs them open.
+                await registry.drain()
 
 
 app = FastAPI(title="Hyris API", version="0.2.0", lifespan=lifespan)

@@ -150,3 +150,41 @@ def test_the_sync_postgres_saver_cannot_serve_astream():
     for name in ("aput", "aget_tuple", "aput_writes"):
         assert name not in PostgresSaver.__dict__, f"sync saver unexpectedly implements {name}"
         assert name in AsyncPostgresSaver.__dict__, f"async saver must implement {name}"
+
+
+async def test_shutdown_drains_an_in_flight_run():
+    """uvicorn drains HTTP requests but knows nothing about the background generation tasks, so
+    without this a Ctrl-C mid-run discarded the whole thing -- memory and quiz row included."""
+    import asyncio
+
+    from app.services.runs import RunRegistry
+
+    reg = RunRegistry()
+    finished = []
+
+    async def slow(*_a, **_k):
+        await asyncio.sleep(0.05)
+        finished.append(True)
+
+    reg._execute = slow
+    await reg.start(object(), {})
+    assert reg._tasks, "the task must be tracked, not fire-and-forget"
+    await reg.drain(timeout=5)
+    assert finished == [True], "drain must wait for the run to land"
+
+
+async def test_drain_cancels_a_wedged_run_rather_than_hanging():
+    import asyncio
+
+    from app.services.runs import RunRegistry
+
+    reg = RunRegistry()
+
+    async def wedged(*_a, **_k):
+        await asyncio.sleep(60)
+
+    reg._execute = wedged
+    await reg.start(object(), {})
+    await reg.drain(timeout=0.05)  # must return, not block for a minute
+    await asyncio.sleep(0)
+    assert all(t.cancelled() or t.done() for t in list(reg._tasks) or [])
