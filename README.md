@@ -8,7 +8,7 @@ Turn any web page into a personalized quiz. V1 is a LangGraph agent that plans, 
 | Aspect | V1 |
 |---|---|
 | Source of truth | The current page only |
-| Orchestration | LangGraph (Postgres checkpointer planned; see Memory model) |
+| Orchestration | LangGraph with a Postgres checkpointer |
 | Memory | Graph checkpoints, quiz and attempt history, learner profile |
 | Tools | `clean_page` in V1, fact-check button later |
 
@@ -118,21 +118,41 @@ so the CLI and the editor always agree.
 Generation is asynchronous: start a run, then poll or stream.
 
 ```bash
+# 0. Register a device — returns {user_id, token}. Needs AUTH_SECRET; without it every caller is
+#    "anonymous" and this returns 503. The token is what makes an identity unforgeable.
+curl -X POST http://localhost:8000/auth/device
+TOKEN=...   # from the response
+
 # 1. Start a run — returns 202 with a run_id
 curl -X POST http://localhost:8000/quiz/generate \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
   -d '{"page_url": "https://en.wikipedia.org/wiki/Photosynthesis",
        "profile": {"question_count": 4, "difficulty": "medium"}}'
 
 # 2a. Poll until status is done (Postman-friendly)
-curl http://localhost:8000/quiz/runs/<run_id>
+curl http://localhost:8000/quiz/runs/<run_id> -H "Authorization: Bearer $TOKEN"
 
 # 2b. Or stream progress live (SSE)
 curl -N http://localhost:8000/quiz/runs/<run_id>/events
+
+# 3. This caller's past quizzes, newest first (limit 1..100)
+curl "http://localhost:8000/quizzes?limit=20" -H "Authorization: Bearer $TOKEN"
+
+# 4. Submit answers — scored server-side against the stored quiz, then mastery moves.
+#    Send an attempt_id to make a retry idempotent; without one a resubmit counts twice.
+curl -X POST http://localhost:8000/attempts \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+  -d '{"quiz_id": "quiz_...", "answers": {"0": 2, "1": 0}}'
 ```
 
-The poll response carries `status` (running, done, failed), the `steps` completed so far,
-and the final `quiz` or a user-safe `error`.
+The poll response carries `status` (running, done, failed), the `steps` completed so far, and the
+final `quiz` or a user-safe `error`. Omit the header entirely and you are `anonymous` — a single
+shared profile, which is why curl and Postman keep working without registering.
+
+Identity precedence is `Authorization: Bearer` first, then the legacy `X-User-Id` header, then
+`anonymous`. `X-User-Id` is **forgeable** — any caller can name any learner — so every use is logged
+and `ALLOW_HEADER_IDENTITY=false` refuses it outright. It exists only until the extension migrates
+to device tokens.
 
 ## System design
 
@@ -143,7 +163,7 @@ flowchart LR
   AGENT["🕸️ Quiz Agent<br/>LangGraph"]
   TOOL["🧹 clean_page<br/>fetches the page · strips boilerplate"]
   LLM["✨ OpenAI<br/>LLM · swappable"]
-  DB[("🐘 Postgres<br/>learner profile · quiz history")]
+  DB[("🐘 Postgres<br/>checkpoints · quizzes · learner profile")]
 
   CHROME == "url + profile" ==> API
   API -. "live status · finished quiz" .-> CHROME
@@ -219,15 +239,21 @@ different keys, so the fan-in needs no reducers.
 
 ## Memory model
 
-Three layers, one Postgres instance. **Only the learner profile is wired today** — with
-`DATABASE_URL` set, the app lifespan opens one `PostgresStore`, runs its migrations once, and closes
-it on shutdown, so mastery and quiz history survive a restart. The other two rows are planned.
+Three layers, one Postgres instance, all three live when `DATABASE_URL` is set. The app lifespan
+opens each one, runs its migrations, and closes it on shutdown; with the variable unset every layer
+falls back to its in-memory equivalent and the API still serves.
 
-| Layer | Kind | Backed by | Status |
+| Layer | Kind | Backed by | What it does |
 |---|---|---|---|
-| Graph checkpoints | Thread | LangGraph `PostgresSaver` | **Planned** — still `MemorySaver`, so runs do not survive a restart |
-| Quiz and attempt history | Episodic | `quizzes`, `quiz_attempts` tables | **Planned** — tables defined in `models/entities.py`, not yet connected |
-| Learner profile | Semantic | LangGraph `PostgresStore` | **Live** — per-concept mastery (EMA) and per-domain question history, persisted |
+| Graph checkpoints | Thread | LangGraph `AsyncPostgresSaver` | Every node transition, per run: resumable, debuggable, and the reason a poll can be answered by a worker that did not run the graph |
+| Quiz and attempt history | Episodic | `quizzes`, `quiz_attempts` | Powers `GET /quizzes` and lets `POST /attempts` score against the stored quiz rather than trusting the client |
+| Learner profile | Semantic | LangGraph `PostgresStore` | Per-concept mastery (EMA over attempts) and per-domain question hashes, driving adaptive difficulty |
+
+The saver is the async one on purpose: the sync `PostgresSaver` inherits `aput`/`aget_tuple` from the
+base class, which raise `NotImplementedError`, and the graph is driven with `astream()`.
+
+Nothing prunes itself, so `python -m app.prune` deletes checkpoints and quizzes past their retention
+(`CHECKPOINT_RETENTION_DAYS`, `QUIZ_RETENTION_DAYS`; `0` disables either).
 
 The loop closes on every attempt: correct answers raise a concept's mastery, wrong answers
 lower it, and the next quiz on that topic plans around what changed.
@@ -273,8 +299,8 @@ Every slot is a unique concept and Bloom level pair, so questions stay distinct.
 ## V1 scope
 
 Chrome Extension + FastAPI + LangGraph agent + LLM + PostgreSQL. The current page is the only
-source of truth. One tool (`clean_page`) and three memory layers: graph checkpoints, quiz and
-attempt history, and a learner profile that adapts difficulty over time. No web search, no
+source of truth. One tool (`clean_page`) and three memory layers — graph checkpoints, quiz and
+attempt history, and a learner profile that adapts difficulty over time — all persisted. No web search, no
 RAG, no microservices. In one phrase: an evaluator-optimizer workflow with parallel fan-out.
 
 ## License
