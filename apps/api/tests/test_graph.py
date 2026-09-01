@@ -38,6 +38,9 @@ def test_happy_path(fake_llm, fake_page):
         assert node in final["_steps"]
     # memory loop closed
     assert len(store.search(("users", "test_user", "quiz_history"))) == 1
+    # every question carries the concept it tested -- Step 4 keys mastery on this, and the blueprint
+    # is the only place it exists
+    assert all(q["concept"] and q["bloom_level"] for q in quiz["questions"])
 
 
 def test_schema_retry_then_success(fake_page):

@@ -12,6 +12,7 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "langgraph>=0.2",
     "langgraph-checkpoint-postgres>=2.0",
+    "alembic>=1.13",
     "langchain-core>=0.3",
     "langchain-openai>=0.2",
     "openai>=1.50",
@@ -37,9 +38,16 @@ target-version = "py311"
 # E/W pycodestyle, F pyflakes, I import sorting, UP pyupgrade, B bugbear.
 select = ["E", "W", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.isort]
+# The local `alembic/` migrations directory makes ruff read the alembic PACKAGE as first-party.
+known-third-party = ["alembic"]
+
 [tool.ruff.lint.per-file-ignores]
 # Star-imports and unused fixtures are idiomatic in tests.
 "tests/*" = ["F403", "F405"]
+# Alembic generates revisions from its own template: unsorted imports, typing.Union,
+# trailing whitespace after "Revises:". Not worth hand-editing every migration.
+"alembic/versions/*" = ["E501", "I001", "W291", "UP035", "UP007"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

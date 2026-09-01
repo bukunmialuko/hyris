@@ -228,11 +228,22 @@ def critique_questions(llm, clean_text: str, questions: list[QuizQuestion]) -> d
 # ---------------------------------------------------------------- finalize (pure)
 
 
-def finalize_quiz(title: str, note: str, truncated: bool, questions: list[QuizQuestion]) -> dict:
+def finalize_quiz(
+    title: str, note: str, truncated: bool, questions: list[QuizQuestion], blueprint: list[Slot]
+) -> dict:
+    # The concept lives only in the blueprint, but mastery is tracked per concept -- so it has to
+    # travel with the question that tested it, or an attempt cannot say what was learned.
+    # blueprint is written once by plan_quiz and never shrinks (critique drops questions, not slots),
+    # so every slot_id resolves; a KeyError here would be the correct loud failure.
+    slots = {s["slot_id"]: s for s in blueprint}
     return {
         "id": f"quiz_{uuid.uuid4().hex[:12]}",
         "title": title,
         "note": note,
         "truncated": truncated,
-        "questions": sorted(questions, key=lambda q: q["slot_id"]),
+        "questions": [
+            {**q, "concept": slots[q["slot_id"]]["concept"],
+             "bloom_level": slots[q["slot_id"]]["bloom_level"]}
+            for q in sorted(questions, key=lambda q: q["slot_id"])
+        ],
     }

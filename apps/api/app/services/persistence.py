@@ -14,6 +14,8 @@ import psycopg
 from langgraph.store.base import BaseStore
 from langgraph.store.postgres import PostgresStore
 from psycopg import conninfo
+from sqlalchemy import URL, create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import normalize_dsn, postgres_dsn
 
@@ -77,3 +79,78 @@ def store_lifespan() -> Generator[BaseStore | None, None, None]:
     with open_store(dsn) as store:
         logger.info("learner memory: PostgresStore at %s", _summary(dsn))
         yield store
+
+
+# Keys consumed by URL.create itself; everything else is a libpq parameter (sslmode, options,
+# application_name, connect_timeout, ...) that must survive, or the users engine would connect with
+# different security than the store does.
+_URL_KEYS = {"user", "password", "host", "port", "dbname"}
+
+
+def sqlalchemy_dsn() -> str:
+    """The SQLAlchemy URL for the users table, or "" when there is none to build.
+
+    Built by parsing, not rewriting: psycopg accepts both a URL and libpq's key=value form, but
+    create_engine parses only URLs -- a regex inverse would silently switch the users table off for a
+    DSN the store happily uses. Returns "" rather than raising: this runs at startup, and
+    store_lifespan has already reported a genuinely broken DSN with a better message.
+    """
+    dsn = postgres_dsn()
+    if not dsn:
+        return ""
+    try:
+        p = conninfo.conninfo_to_dict(dsn)
+        return URL.create(
+            "postgresql+psycopg",
+            username=p.get("user"),
+            password=p.get("password"),
+            host=p.get("host"),
+            port=int(p["port"]) if p.get("port") else None,
+            database=p.get("dbname"),
+            query={k: str(v) for k, v in p.items() if k not in _URL_KEYS},
+        ).render_as_string(hide_password=False)
+    except (psycopg.Error, ValueError) as e:
+        # NEVER interpolate the DSN or the exception: libpq quotes the whole connection string back
+        # on a parse error, password included, and a comma-separated multi-host raises ValueError.
+        logger.warning("DATABASE_URL cannot be expressed as a SQLAlchemy URL (%s); users table off.",
+                       type(e).__name__)
+        return ""
+
+
+@contextmanager
+def engine_lifespan() -> Generator[sessionmaker[Session] | None, None, None]:
+    """The process-wide session factory for the users table, or None when there is none.
+
+    A second connection to the same database on purpose: PostgresStore owns a psycopg pool it does
+    not expose, and SQLAlchemy needs the "+psycopg" URL libpq rejects. Sync, because an async engine
+    would pull in greenlet for no gain -- FastAPI runs sync dependencies in a threadpool.
+    """
+    url = sqlalchemy_dsn()
+    if not url:
+        yield None
+        return
+    where = _summary(postgres_dsn())
+    engine = None
+    try:
+        engine = create_engine(
+            url,
+            pool_size=2,
+            max_overflow=2,
+            pool_pre_ping=True,  # survive a database restart
+            pool_timeout=5,      # not the 30s default: a dead DB must not pin a threadpool slot
+            connect_args={"connect_timeout": CONNECT_TIMEOUT},
+        )
+        with engine.connect():   # prove driver + credentials now, not on the first request
+            pass
+    except Exception as e:
+        if engine is not None:
+            engine.dispose()
+        # str(e) on a SQLAlchemy connect error can carry the URL; never interpolate it.
+        raise RuntimeError(
+            f"DATABASE_URL is set but SQLAlchemy cannot reach Postgres ({where}): {type(e).__name__}"
+        ) from e
+    try:
+        logger.info("users table: SQLAlchemy engine at %s", where)
+        yield sessionmaker(engine, expire_on_commit=False)
+    finally:
+        engine.dispose()

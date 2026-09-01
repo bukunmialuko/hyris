@@ -22,6 +22,10 @@ services:
   api:
     build: ./apps/api
     restart: unless-stopped
+    # Migrate before serving. depends_on already gates this on the db being healthy.
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
     environment:

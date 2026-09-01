@@ -5,6 +5,7 @@ import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from app.deps import CurrentUserId
 from app.schemas.quiz import GenerateRequest, Quiz, RunCreated, RunStatus
 from app.services.runs import registry
 
@@ -31,12 +32,12 @@ def get_graph():
 
 
 @router.post("/generate", response_model=RunCreated, status_code=202)
-async def generate(req: GenerateRequest) -> RunCreated:
+async def generate(req: GenerateRequest, user_id: CurrentUserId) -> RunCreated:
     run = await registry.start(
         get_graph(),
         {
             "page_url": req.page_url,
-            "user_id": req.user_id,
+            "user_id": user_id,
             "requested": req.profile.question_count,
             "difficulty": req.profile.difficulty,
         },

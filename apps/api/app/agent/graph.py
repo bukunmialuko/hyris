@@ -99,7 +99,8 @@ def build_graph(checkpointer=None, store=None, llm=None, moderation=None):
     def finalize_quiz(state: QuizState) -> QuizState:
         return {
             "quiz": nodes.finalize_quiz(
-                state["title"], state.get("note", ""), state.get("truncated", False), state["questions"]
+                state["title"], state.get("note", ""), state.get("truncated", False),
+                state["questions"], state["blueprint"],
             )
         }
 

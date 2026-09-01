@@ -5,8 +5,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app import deps
 from app.routers import quiz
-from app.services.persistence import store_lifespan
+from app.services.persistence import engine_lifespan, store_lifespan
 
 # uvicorn configures only the uvicorn* loggers and leaves root at WARNING with no handler, so app.*
 # records would vanish — including the line saying persistence is live. Scoped to this app's tree on
@@ -28,8 +29,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     I/O, but uvicorn serves nothing until this yields, so there is no loop to starve. The router gets
     a store, not a compiled graph, so "importing the app never needs an API key" survives.
     """
-    with store_lifespan() as store:
+    with store_lifespan() as store, engine_lifespan() as sessions:
         quiz.set_store(store)
+        deps.set_sessions(sessions)
         yield
 
 

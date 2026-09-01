@@ -23,7 +23,8 @@ class QuestionProfile(BaseModel):
 class GenerateRequest(BaseModel):
     page_url: str = Field(min_length=1)
     profile: QuestionProfile = QuestionProfile()
-    user_id: str = "anonymous"  # replaced by real auth in a later milestone
+    # Identity is the X-User-Id header, not a body field: GET endpoints need it too, and real auth
+    # will replace the dependency rather than every schema. See app/deps.py.
 
 
 class RunCreated(BaseModel):
@@ -34,6 +35,9 @@ class RunCreated(BaseModel):
 
 class QuizQuestion(BaseModel):
     slot_id: int
+    # Carried from the blueprint so an attempt can say which concept was tested (Step 4).
+    concept: str | None = None
+    bloom_level: BloomLevel | None = None
     question: str
     options: list[str] = Field(min_length=4, max_length=4)
     correct_answer: int = Field(ge=0, le=3)

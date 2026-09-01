@@ -63,6 +63,9 @@ uvicorn app.main:app --reload --app-dir apps/api
 # Learner profiles survive restarts only when DATABASE_URL is set (see .env.example):
 #   docker compose up -d db
 #   export DATABASE_URL=postgresql://hyris:hyris@localhost:5433/hyris
+#   (cd apps/api && alembic upgrade head)   # creates users/quizzes/attempts
+# DATABASE_URL must be EXPORTED for alembic: Settings reads .env relative to the CWD, and the
+# .env lives at the repo root, not in apps/api.
 # Leave it unset and the API logs a warning and keeps learner memory in-process.
 # Caveat: with DATABASE_URL set and Postgres NOT running, the API refuses to start — and under
 # --reload uvicorn does not exit, so it hangs instead of aborting. Start the db, or unset the var.

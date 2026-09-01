@@ -1,5 +1,6 @@
 import type { QuizResponse } from "@hyris/contracts";
 import type { PageContent } from "./extract";
+import { getUserId } from "./userId";
 import { toContractProfile } from "./profile";
 import type { QuizProfile } from "./session";
 
@@ -29,7 +30,10 @@ export async function generateQuiz(page: PageContent, profile: QuizProfile): Pro
   if (API_BASE) {
     const r = await fetch(`${API_BASE}/quiz/generate`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      // Deliberately not caught: a storage failure must not silently merge this user's history
+      // into the shared "anonymous" profile. chrome.storage.sync also fails when sync is disabled
+      // or the user is signed out, and that should surface as the extension's normal error state.
+      headers: { "Content-Type": "application/json", "X-User-Id": await getUserId() },
       body: JSON.stringify({ page, profile: toContractProfile(profile) }),
     });
     if (!r.ok) throw new Error(`The quiz service answered ${r.status}.`);
