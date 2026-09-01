@@ -188,3 +188,46 @@ async def test_drain_cancels_a_wedged_run_rather_than_hanging():
     await reg.drain(timeout=0.05)  # must return, not block for a minute
     await asyncio.sleep(0)
     assert all(t.cancelled() or t.done() for t in list(reg._tasks) or [])
+
+
+async def test_a_finished_run_is_readable_from_the_checkpoint_alone():
+    """What makes polling safe under --workers N: the worker that fields the poll may not be the one
+    that ran the graph, but every worker shares the checkpointer."""
+    from app.services.runs import from_checkpoint
+
+    class FakeSaver:
+        def __init__(self, values):
+            self.values = values
+
+        async def aget_tuple(self, config):
+            class T:
+                checkpoint = {"channel_values": self.values}
+            return T()
+
+    done = await from_checkpoint(FakeSaver({"quiz": {"questions": [{"slot_id": 0}]}}), "run_1")
+    assert done.status == "done" and done.quiz["questions"]
+
+    failed = await from_checkpoint(FakeSaver({"error": "Could not fetch the page"}), "run_2")
+    assert failed.status == "failed" and "fetch" in failed.error
+
+    # A checkpoint that reached neither outcome: its worker died mid-run. Reporting "running" would
+    # strand the caller polling forever.
+    stranded = await from_checkpoint(FakeSaver({}), "run_3")
+    assert stranded.status == "failed" and "did not finish" in stranded.error
+
+
+async def test_no_checkpointer_means_no_cross_worker_fallback():
+    from app.services.runs import from_checkpoint
+
+    assert await from_checkpoint(None, "run_1") is None
+
+
+async def test_a_broken_checkpoint_read_does_not_500_the_poll(caplog):
+    from app.services.runs import from_checkpoint
+
+    class Boom:
+        async def aget_tuple(self, config):
+            raise RuntimeError("database is gone")
+
+    assert await from_checkpoint(Boom(), "run_1") is None
+    assert "could not read checkpoint" in caplog.text

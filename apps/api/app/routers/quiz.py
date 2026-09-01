@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from app.deps import CurrentUserId
 from app.schemas.quiz import GenerateRequest, Quiz, RunCreated, RunStatus
-from app.services.runs import registry
+from app.services.runs import from_checkpoint, registry
 
 router = APIRouter()
 
@@ -67,6 +67,10 @@ async def generate(req: GenerateRequest, user_id: CurrentUserId) -> RunCreated:
 async def run_status(run_id: str) -> RunStatus:
     """Polling endpoint — Postman-friendly: call until status is done or failed."""
     run = registry.get(run_id)
+    if run is None:
+        # Not this worker's run. Under --workers N the poll can land anywhere, so fall back to the
+        # checkpointer, which every worker shares.
+        run = await from_checkpoint(_checkpointer, run_id)
     if run is None:
         raise HTTPException(404, "Unknown run_id")
     return RunStatus(

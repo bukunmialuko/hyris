@@ -1,7 +1,10 @@
-"""In-process run registry: start graph runs, stream their progress, keep results.
+"""Run registry: start graph runs, stream their progress, keep results.
 
-Good for local development and a single API process. For multi-worker production,
-swap the registry for Redis or read progress straight from the Postgres checkpointer.
+The registry itself is per-process: it holds the asyncio task and the live SSE queue, neither of
+which can cross a worker boundary. What CAN cross is the checkpointer -- the graph writes its state
+to Postgres on every node transition -- so `from_checkpoint` reconstructs a finished run's result
+for a worker that never ran it. That is what makes polling safe under `--workers N`; live SSE
+streaming still needs the worker that owns the run, and would need pub/sub to do otherwise.
 """
 
 import asyncio
@@ -88,3 +91,34 @@ class RunRegistry:
 
 
 registry = RunRegistry()
+
+
+async def from_checkpoint(saver, run_id: str) -> Run | None:
+    """Rebuild a run's outcome from its checkpoint, for a worker that did not run it.
+
+    thread_id is the run id (see _execute), so the checkpointer is already keyed the way we need.
+    `steps` comes back empty: it is accumulated by the process that streamed the run and is not part
+    of graph state, so a different worker genuinely does not know it.
+    """
+    if saver is None:
+        return None
+    try:
+        tup = await saver.aget_tuple({"configurable": {"thread_id": run_id}})
+    except Exception as e:  # noqa: BLE001 -- a polling endpoint must not 500 on a checkpoint read
+        logger.warning("could not read checkpoint for %s (%s): %s", run_id, type(e).__name__, e)
+        return None
+    if tup is None:
+        return None
+
+    state = tup.checkpoint.get("channel_values", {})
+    run = Run(run_id=run_id)
+    quiz = state.get("quiz") or {}
+    if quiz.get("questions"):
+        run.status, run.quiz = "done", quiz
+    elif state.get("error"):
+        run.status, run.error = "failed", state["error"]
+    else:
+        # A checkpoint exists but the run reached neither outcome: it was still going when its
+        # worker died. Reporting "running" would strand the caller polling forever.
+        run.status, run.error = "failed", "The run did not finish."
+    return run
