@@ -6,8 +6,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import deps
-from app.routers import quiz
-from app.services.persistence import engine_lifespan, store_lifespan
+from app.routers import attempts, history, quiz
+from app.services.persistence import checkpointer_lifespan, engine_lifespan, store_lifespan
 
 # uvicorn configures only the uvicorn* loggers and leaves root at WARNING with no handler, so app.*
 # records would vanish — including the line saying persistence is live. Scoped to this app's tree on
@@ -29,10 +29,18 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     I/O, but uvicorn serves nothing until this yields, so there is no loop to starve. The router gets
     a store, not a compiled graph, so "importing the app never needs an API key" survives.
     """
-    with store_lifespan() as store, engine_lifespan() as sessions:
-        quiz.set_store(store)
-        deps.set_sessions(sessions)
-        yield
+    # The checkpointer is async because the sync PostgresSaver has no async methods and the graph
+    # is driven with astream(); the other two are sync context managers entered on the loop.
+    async with checkpointer_lifespan() as checkpointer:
+        with store_lifespan() as store, engine_lifespan() as sessions:
+            # Two holders on purpose: the router's copies build the graph, deps' copies serve
+            # request-time dependencies. Both are set here, once, from the same objects.
+            quiz.set_store(store)
+            quiz.set_sessions(sessions)
+            quiz.set_checkpointer(checkpointer)
+            deps.set_store(store)
+            deps.set_sessions(sessions)
+            yield
 
 
 app = FastAPI(title="Hyris API", version="0.2.0", lifespan=lifespan)
@@ -46,6 +54,8 @@ app.add_middleware(
 )
 
 app.include_router(quiz.router, prefix="/quiz", tags=["quiz"])
+app.include_router(history.router, prefix="/quizzes", tags=["quizzes"])
+app.include_router(attempts.router, prefix="/attempts", tags=["attempts"])
 
 
 @app.get("/health")

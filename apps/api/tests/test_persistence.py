@@ -125,3 +125,28 @@ def test_history_degrades_to_empty_context_when_the_store_raises(caplog):
     ctx = load_learner_context(Broken(), "u1", "https://example.org/a")
     assert ctx == {"mastered_concepts": [], "weak_concepts": [], "recent_question_hashes": []}
     assert "learner memory unavailable" in caplog.text  # and it is no longer silent
+
+
+async def test_no_database_url_yields_no_checkpointer(monkeypatch):
+    """Without a database the graph keeps build_graph's in-memory MemorySaver."""
+    from app.services.persistence import checkpointer_lifespan
+
+    monkeypatch.setattr("app.services.persistence.postgres_dsn", lambda: "")
+    async with checkpointer_lifespan() as saver:
+        assert saver is None
+
+
+def test_the_sync_postgres_saver_cannot_serve_astream():
+    """Why checkpointer_lifespan is async while the store's is not.
+
+    The sync PostgresSaver inherits aput/aget_tuple from BaseCheckpointSaver, which raise
+    NotImplementedError -- and app.services.runs drives the graph with astream(). Swapping the async
+    saver for the sync one would fail on the first node transition, with an empty error message.
+    Pinned here because that failure is silent enough to be re-introduced by accident.
+    """
+    from langgraph.checkpoint.postgres import PostgresSaver
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+    for name in ("aput", "aget_tuple", "aput_writes"):
+        assert name not in PostgresSaver.__dict__, f"sync saver unexpectedly implements {name}"
+        assert name in AsyncPostgresSaver.__dict__, f"async saver must implement {name}"

@@ -30,6 +30,7 @@ ANONYMOUS = "anonymous"
 _ALLOWED = re.compile(r"[A-Za-z0-9_-]+")
 
 _sessions: sessionmaker[Session] | None = None
+_store = None  # the LangGraph store; endpoints that move mastery need the same one the graph uses
 
 
 def set_sessions(sessions: sessionmaker[Session] | None) -> None:
@@ -40,6 +41,34 @@ def set_sessions(sessions: sessionmaker[Session] | None) -> None:
     """
     global _sessions
     _sessions = sessions
+
+
+def set_store(store) -> None:
+    """Called once by the app lifespan. app.routers.quiz keeps its own copy for build_graph; this
+    one is for request-time work like scoring an attempt, which must move mastery in the same store
+    the graph reads."""
+    global _store
+    _store = store
+
+
+def get_store():
+    """The process-wide store, or None when there is no database."""
+    return _store
+
+
+Store = Annotated[object, Depends(get_store)]
+
+
+def get_sessions() -> sessionmaker[Session] | None:
+    """The process-wide session factory, or None when there is no database.
+
+    Added the day a route actually needed a Session (GET /quizzes). Routes take this rather than
+    reaching into another module's global, and a test can override it through the app.
+    """
+    return _sessions
+
+
+Sessions = Annotated["sessionmaker[Session] | None", Depends(get_sessions)]
 
 
 def _ensure_user(user_id: str) -> None:

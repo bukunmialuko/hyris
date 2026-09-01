@@ -8,10 +8,13 @@ from app.services.persistence import sqlalchemy_dsn
 
 target_metadata = Base.metadata
 
-# langgraph's PostgresStore migrates ITSELF into the same database, under store_migrations. Alembic
+# langgraph's PostgresStore and PostgresSaver migrate THEMSELVES into the same database. Alembic
 # does not own those tables, and without this filter `--autogenerate` sees them as tables that should
 # not exist and emits op.drop_table('store') -- which would delete every persisted learner profile.
-NOT_OURS = {"store", "store_vectors", "store_migrations"}
+NOT_OURS = {
+    "store", "store_vectors", "store_migrations",          # PostgresStore
+    "checkpoints", "checkpoint_blobs", "checkpoint_writes", "checkpoint_migrations",  # PostgresSaver
+}
 
 
 def include_name(name, type_, parent_names):

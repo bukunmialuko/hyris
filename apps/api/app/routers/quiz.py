@@ -13,6 +13,8 @@ router = APIRouter()
 
 _graph = None
 _store = None      # installed by the app lifespan; None means build_graph's in-memory default
+_sessions = None   # ditto; None means quiz rows are not recorded
+_checkpointer = None  # ditto; None means build_graph's in-memory MemorySaver
 
 
 def set_store(store) -> None:
@@ -21,13 +23,25 @@ def set_store(store) -> None:
     _graph, _store = None, store
 
 
+def set_sessions(sessions) -> None:
+    """Called once by the app lifespan. The graph needs this to write the quizzes row."""
+    global _graph, _sessions
+    _graph, _sessions = None, sessions
+
+
+def set_checkpointer(checkpointer) -> None:
+    """Called once by the app lifespan. None keeps build_graph's in-memory MemorySaver."""
+    global _graph, _checkpointer
+    _graph, _checkpointer = None, checkpointer
+
+
 def get_graph():
     """Lazy singleton so importing the app never needs an API key."""
     global _graph
     if _graph is None:
         from app.agent.graph import build_graph
 
-        _graph = build_graph(store=_store)
+        _graph = build_graph(checkpointer=_checkpointer, store=_store, sessions=_sessions)
     return _graph
 
 

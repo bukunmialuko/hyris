@@ -1,5 +1,6 @@
 """Pydantic models for the API boundary, mirroring packages/contracts/quiz.schema.json."""
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -58,3 +59,42 @@ class RunStatus(BaseModel):
     steps: list[str] = []
     quiz: Quiz | None = None
     error: str | None = None
+
+
+class QuizSummary(BaseModel):
+    """A history row. Deliberately not the full payload: a list of twenty quizzes should not ship
+    twenty question sets, and the client already holds the one it is showing."""
+
+    id: str
+    title: str
+    source_url: str
+    question_count: int
+    created_at: datetime
+
+
+class QuizHistory(BaseModel):
+    quizzes: list[QuizSummary]
+
+
+class AttemptRequest(BaseModel):
+    quiz_id: str = Field(min_length=1)
+    # {question_id: chosen option index}. A question left out is marked wrong.
+    answers: dict[str, int] = Field(default_factory=dict)
+    # Optional idempotency key: resubmitting the same one records nothing and moves no mastery.
+    attempt_id: str | None = None
+
+
+class QuestionResult(BaseModel):
+    question_id: str
+    concept: str | None = None
+    picked: int | None = None
+    correct_answer: int
+    correct: bool
+
+
+class AttemptResult(BaseModel):
+    attempt_id: str
+    quiz_id: str
+    score: int
+    total: int
+    results: list[QuestionResult]

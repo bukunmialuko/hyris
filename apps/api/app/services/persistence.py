@@ -7,10 +7,11 @@ FastAPI lifespan in app.main, which owns the store for the life of the process.
 """
 
 import logging
-from collections.abc import Generator
-from contextlib import contextmanager
+from collections.abc import AsyncGenerator, Generator
+from contextlib import asynccontextmanager, contextmanager
 
 import psycopg
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.store.base import BaseStore
 from langgraph.store.postgres import PostgresStore
 from psycopg import conninfo
@@ -27,6 +28,10 @@ CONNECT_TIMEOUT = 5  # seconds to prove the database is reachable, at startup
 # undeclared in langgraph's PoolConfig TypedDict but does reach ConnectionPool (it forwards **pc);
 # it is what a store op waits when the database is gone, so keep it short.
 POOL_CONFIG = {"min_size": 1, "max_size": 2, "timeout": 2.0}
+# psycopg connection settings both langgraph backends need: dict_row because they read rows by
+# name, autocommit because a migration uses CREATE INDEX CONCURRENTLY, prepare_threshold=0 because
+# a pooled connection would otherwise accumulate prepared statements across checkouts.
+POOL_KWARGS = {"autocommit": True, "prepare_threshold": 0}
 
 
 def _summary(dsn: str) -> str:
@@ -154,3 +159,53 @@ def engine_lifespan() -> Generator[sessionmaker[Session] | None, None, None]:
         yield sessionmaker(engine, expire_on_commit=False)
     finally:
         engine.dispose()
+
+
+@asynccontextmanager
+async def checkpointer_lifespan() -> AsyncGenerator[BaseCheckpointSaver | None, None]:
+    """The process-wide checkpointer, or None when there is no database.
+
+    ASYNC, unlike the store and the engine, and not by preference. The sync PostgresSaver does not
+    implement aput/aget_tuple/aput_writes/alist at all -- the base class raises NotImplementedError
+    -- and app.services.runs drives the graph with graph.astream(), so a sync saver fails on the
+    first node transition with an empty error message. The store gets away with being sync because
+    its abatch() offloads to a worker thread; the saver has no such bridge.
+
+    Given a pool rather than from_conn_string's single connection, for the same reason the store has
+    one: a bare connection is dead permanently once the server drops it, so `docker compose restart
+    db` would fail every run until the API itself restarted. Not for concurrency -- PostgresSaver
+    holds an instance lock around every cursor.
+    """
+    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from psycopg.rows import dict_row
+    from psycopg_pool import AsyncConnectionPool
+
+    dsn = postgres_dsn()
+    if not dsn:
+        yield None
+        return
+    where = _summary(dsn)
+    pool = AsyncConnectionPool(
+        dsn,
+        min_size=POOL_CONFIG["min_size"],
+        max_size=POOL_CONFIG["max_size"],
+        timeout=POOL_CONFIG["timeout"],
+        open=False,
+        kwargs={**POOL_KWARGS, "row_factory": dict_row},
+        check=AsyncConnectionPool.check_connection,
+    )
+    try:
+        await pool.open(wait=True, timeout=CONNECT_TIMEOUT)
+        saver = AsyncPostgresSaver(conn=pool)
+        await saver.setup()  # idempotent: checkpoint_migrations guards it
+    except Exception as e:
+        await pool.close()
+        raise RuntimeError(
+            f"DATABASE_URL is set but the checkpointer could not be opened ({where}): "
+            f"{type(e).__name__}"
+        ) from e
+    try:
+        logger.info("run checkpoints: AsyncPostgresSaver at %s", where)
+        yield saver
+    finally:
+        await pool.close()
