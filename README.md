@@ -80,6 +80,12 @@ pytest apps/api
 ruff check apps/api
 ```
 
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs the same checks on every push and PR:
+lint and the offline suite on Python 3.11 and 3.12, the suite again against a real Postgres, and the
+extension typecheck and build. The Postgres job also runs `alembic revision --autogenerate` and fails
+if it is not empty — which catches both a model changed without a migration and `alembic/env.py`
+losing the filter that keeps autogenerate away from langgraph's own `store` tables.
+
 ### Editor setup
 
 [.vscode/settings.json](.vscode/settings.json) is committed and wires up the rest: it points
