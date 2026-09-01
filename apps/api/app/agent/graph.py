@@ -1,8 +1,12 @@
 """Graph wiring — the reference implementation of the design's agent graph.
 
 build_graph() takes its backends as arguments (dependency injection): tests pass
-MemorySaver/InMemoryStore and a fake LLM; production passes the Postgres pair.
+MemorySaver/InMemoryStore and a fake LLM; the API passes the PostgresStore its lifespan opened
+(app/services/persistence.py). build_graph() opens nothing and never reads DATABASE_URL, so an
+unconfigured caller always gets an isolated in-memory store.
 """
+
+import logging
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -13,9 +17,12 @@ from app.agent.state import QuizState
 from app.agent.tools import memory as memory_tools
 from app.agent.tools.clean_page import clean_page as clean_page_tool
 from app.config import get_settings
+from app.services import quizzes
+
+logger = logging.getLogger(__name__)
 
 
-def build_graph(checkpointer=None, store=None, llm=None, moderation=None):
+def build_graph(checkpointer=None, store=None, llm=None, moderation=None, sessions=None):
     """Compile the quiz agent graph. Defaults are in-memory backends and the
     configured OpenAI model, created lazily so imports stay side-effect free."""
     s = get_settings()
@@ -73,9 +80,18 @@ def build_graph(checkpointer=None, store=None, llm=None, moderation=None):
         return {"questions": state["questions"] + new}
 
     def schema_gate(state: QuizState) -> QuizState:
+        # On the last attempt, accept questions the learner has already seen. Novelty is worth two
+        # regeneration rounds; it is not worth returning no quiz at all.
+        last_chance = state["gen_retries"] >= s.max_gen_retries
         valid, missing, feedback = nodes.schema_gate(
-            state["questions"], state["blueprint"], state["learner_context"]["recent_question_hashes"]
+            state["questions"],
+            state["blueprint"],
+            state["learner_context"]["recent_question_hashes"],
+            allow_repeats=last_chance,
         )
+        if last_chance and valid:
+            logger.info("accepting %d previously-seen question(s): the retry budget is spent and a "
+                        "repeated quiz beats no quiz", len(valid))
         return {
             "questions": valid,
             "pending_slots": missing,
@@ -97,18 +113,27 @@ def build_graph(checkpointer=None, store=None, llm=None, moderation=None):
     def finalize_quiz(state: QuizState) -> QuizState:
         return {
             "quiz": nodes.finalize_quiz(
-                state["title"], state.get("note", ""), state.get("truncated", False), state["questions"]
+                state["title"], state.get("note", ""), state.get("truncated", False),
+                state["questions"], state["blueprint"],
             )
         }
 
     def guard_output(state: QuizState) -> QuizState:
+        if not state["quiz"].get("questions"):
+            # Reaching here with nothing means generation failed, not that the page is unsafe.
+            # moderate_quiz([]) would return the "unsuitable page" message and mislead the user.
+            return {"error": "Couldn't write questions for this page. Try again."}
         kept, err = guards.moderate_quiz(state["quiz"]["questions"], moderation)
         if err:
             return {"error": err}
         return {"quiz": {**state["quiz"], "questions": kept}}
 
     def write_memory(state: QuizState) -> QuizState:
+        # Two records, two purposes: the store holds the learner profile that shapes the next quiz,
+        # the quizzes table holds what was actually generated so it can be listed and re-scored.
+        # Both are best-effort -- neither may fail a quiz the user is already looking at.
         memory_tools.record_quiz(store, state["user_id"], state["page_url"], state["quiz"])
+        quizzes.record_quiz_row(sessions, state["user_id"], state["page_url"], state["quiz"])
         return {}
 
     def end_gracefully(state: QuizState) -> QuizState:

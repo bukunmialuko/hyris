@@ -32,10 +32,25 @@ apps/extension    Chrome extension (MV3, React + Vite + TS)
 apps/api          FastAPI backend (agents: generate → critique → validate)
 packages/contracts  Shared quiz JSON schema + fixtures (single source of truth)
 design/           Interactive HTML prototype (deployed to GitHub Pages)
+research/         Jupyter notebooks for agent prototyping
 docs/             Architecture notes
 ```
 
-## Quick start
+## Local development
+
+One conda env covers all the Python here — the API, its dev tooling, and the `research/`
+notebooks. Create it once, then just `conda activate agents` whenever you work on Hyris:
+
+```bash
+conda create -n agents python=3.11 -y
+conda activate agents
+pip install -e "apps/api[dev]" -r research/requirements.txt
+```
+
+`-e` installs the API in editable mode, so `import app.…` resolves to your working tree and
+code changes take effect without reinstalling. `[dev]` adds pytest, httpx and ruff.
+
+Then, with the env active:
 
 ```bash
 # Extension
@@ -43,47 +58,101 @@ npm install
 npm run dev:ext          # then load apps/extension/dist as unpacked extension
 
 # API (copy .env.example to .env and set OPENAI_API_KEY first)
-cd apps/api
-pip install -e ".[dev]"
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --app-dir apps/api
 
-# Or run everything in Docker (API + Postgres)
+# Identities: without AUTH_SECRET every caller is "anonymous" and POST /auth/device returns 503.
+#   export AUTH_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+# The extension registers once at POST /auth/device and sends Authorization: Bearer thereafter.
+# X-User-Id still works but is forgeable — set ALLOW_HEADER_IDENTITY=false to refuse it.
+
+# Learner profiles survive restarts only when DATABASE_URL is set (see .env.example):
+#   docker compose up -d db
+#   export DATABASE_URL=postgresql://hyris:hyris@localhost:5433/hyris
+#   (cd apps/api && alembic upgrade head)   # creates users/quizzes/attempts
+# DATABASE_URL must be EXPORTED for alembic: Settings reads .env relative to the CWD, and the
+# .env lives at the repo root, not in apps/api.
+# Leave it unset and the API logs a warning and keeps learner memory in-process.
+# Caveat: with DATABASE_URL set and Postgres NOT running, the API refuses to start — and under
+# --reload uvicorn does not exit, so it hangs instead of aborting. Start the db, or unset the var.
+
+# Or run everything in Docker (API + Postgres) — no conda env needed
 docker compose up --build
 
 # Tests (no API key needed — the suite runs on a fake LLM)
-cd apps/api && pytest
+pytest apps/api
+
+# Lint
+ruff check apps/api
+
+# Prune aged-out checkpoints and quizzes (a scheduled command, not a background timer).
+# Retention is CHECKPOINT_RETENTION_DAYS / QUIZ_RETENTION_DAYS; 0 disables either.
+cd apps/api && python -m app.prune
 ```
+
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs the same checks on every push and PR:
+lint and the offline suite on Python 3.11 and 3.12, the suite again against a real Postgres, and the
+extension typecheck and build. The Postgres job also runs `alembic revision --autogenerate` and fails
+if it is not empty — which catches both a model changed without a migration and `alembic/env.py`
+losing the filter that keeps autogenerate away from langgraph's own `store` tables.
+
+### Editor setup
+
+[.vscode/settings.json](.vscode/settings.json) is committed and wires up the rest: it points
+Pylance at the `agents` env, puts `apps/api` on the analysis path, enables pytest discovery,
+and applies ruff fixes on save. Install the three recommended extensions when VSCode offers
+them (Python, Pylance, Ruff).
+
+Two things to know:
+
+- The interpreter path in that file is `/opt/homebrew/anaconda3/envs/agents/bin/python`. If
+  your conda lives elsewhere, run `conda run -n agents which python` and update it — or just
+  use **Python: Select Interpreter** and pick `agents`.
+- If imports still show as unresolved, the env isn't selected. Check the interpreter in the
+  status bar with a `.py` file open, then **Developer: Reload Window**.
+
+Ruff's rules live in [apps/api/pyproject.toml](apps/api/pyproject.toml) under `[tool.ruff]`,
+so the CLI and the editor always agree.
 
 ## Trying the API (Postman or curl)
 
 Generation is asynchronous: start a run, then poll or stream.
 
 ```bash
+# 0. Register a device — returns {user_id, token}. Needs AUTH_SECRET; without it every caller is
+#    "anonymous" and this returns 503. The token is what makes an identity unforgeable.
+curl -X POST http://localhost:8000/auth/device
+TOKEN=...   # from the response
+
 # 1. Start a run — returns 202 with a run_id
 curl -X POST http://localhost:8000/quiz/generate \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
   -d '{"page_url": "https://en.wikipedia.org/wiki/Photosynthesis",
        "profile": {"question_count": 4, "difficulty": "medium"}}'
 
 # 2a. Poll until status is done (Postman-friendly)
-curl http://localhost:8000/quiz/runs/<run_id>
+curl http://localhost:8000/quiz/runs/<run_id> -H "Authorization: Bearer $TOKEN"
 
 # 2b. Or stream progress live (SSE)
 curl -N http://localhost:8000/quiz/runs/<run_id>/events
+
+# 3. This caller's past quizzes, newest first (limit 1..100)
+curl "http://localhost:8000/quizzes?limit=20" -H "Authorization: Bearer $TOKEN"
+
+# 4. Submit answers — scored server-side against the stored quiz, then mastery moves.
+#    Send an attempt_id to make a retry idempotent; without one a resubmit counts twice.
+curl -X POST http://localhost:8000/attempts \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+  -d '{"quiz_id": "quiz_...", "answers": {"0": 2, "1": 0}}'
 ```
 
-The poll response carries `status` (running, done, failed), the `steps` completed so far,
-and the final `quiz` or a user-safe `error`.
+The poll response carries `status` (running, done, failed), the `steps` completed so far, and the
+final `quiz` or a user-safe `error`. Omit the header entirely and you are `anonymous` — a single
+shared profile, which is why curl and Postman keep working without registering.
 
-## Agent research environment
-
-The `research/` notebooks use a conda env:
-
-```bash
-conda create -n agents python=3.11 -y
-conda activate agents
-pip install -r research/requirements.txt
-```
+Identity precedence is `Authorization: Bearer` first, then the legacy `X-User-Id` header, then
+`anonymous`. `X-User-Id` is **forgeable** — any caller can name any learner — so every use is logged
+and `ALLOW_HEADER_IDENTITY=false` refuses it outright. It exists only until the extension migrates
+to device tokens.
 
 ## System design
 
@@ -94,7 +163,7 @@ flowchart LR
   AGENT["🕸️ Quiz Agent<br/>LangGraph"]
   TOOL["🧹 clean_page<br/>fetches the page · strips boilerplate"]
   LLM["✨ OpenAI<br/>LLM · swappable"]
-  DB[("🐘 Postgres<br/>checkpoints · history · learner profile")]
+  DB[("🐘 Postgres<br/>checkpoints · quizzes · learner profile")]
 
   CHROME == "url + profile" ==> API
   API -. "live status · finished quiz" .-> CHROME
@@ -170,13 +239,21 @@ different keys, so the fan-in needs no reducers.
 
 ## Memory model
 
-Three layers, one Postgres instance:
+Three layers, one Postgres instance, all three live when `DATABASE_URL` is set. The app lifespan
+opens each one, runs its migrations, and closes it on shutdown; with the variable unset every layer
+falls back to its in-memory equivalent and the API still serves.
 
 | Layer | Kind | Backed by | What it does |
 |---|---|---|---|
-| Graph checkpoints | Thread | LangGraph `PostgresSaver` | Every node transition saved per run: resumable, debuggable, ready for human-in-the-loop |
-| Quiz and attempt history | Episodic | `quizzes`, `quiz_attempts` tables | Powers "never repeat a question" and per-page quiz recall |
-| Learner profile | Semantic | LangGraph `PostgresStore` | Per-concept mastery (EMA over attempts) that drives adaptive difficulty over time |
+| Graph checkpoints | Thread | LangGraph `AsyncPostgresSaver` | Every node transition, per run: resumable, debuggable, and the reason a poll can be answered by a worker that did not run the graph |
+| Quiz and attempt history | Episodic | `quizzes`, `quiz_attempts` | Powers `GET /quizzes` and lets `POST /attempts` score against the stored quiz rather than trusting the client |
+| Learner profile | Semantic | LangGraph `PostgresStore` | Per-concept mastery (EMA over attempts) and per-domain question hashes, driving adaptive difficulty |
+
+The saver is the async one on purpose: the sync `PostgresSaver` inherits `aput`/`aget_tuple` from the
+base class, which raise `NotImplementedError`, and the graph is driven with `astream()`.
+
+Nothing prunes itself, so `python -m app.prune` deletes checkpoints and quizzes past their retention
+(`CHECKPOINT_RETENTION_DAYS`, `QUIZ_RETENTION_DAYS`; `0` disables either).
 
 The loop closes on every attempt: correct answers raise a concept's mastery, wrong answers
 lower it, and the next quiz on that topic plans around what changed.
@@ -222,8 +299,8 @@ Every slot is a unique concept and Bloom level pair, so questions stay distinct.
 ## V1 scope
 
 Chrome Extension + FastAPI + LangGraph agent + LLM + PostgreSQL. The current page is the only
-source of truth. One tool (`clean_page`) and three memory layers: graph checkpoints, quiz and
-attempt history, and a learner profile that adapts difficulty over time. No web search, no
+source of truth. One tool (`clean_page`) and three memory layers — graph checkpoints, quiz and
+attempt history, and a learner profile that adapts difficulty over time — all persisted. No web search, no
 RAG, no microservices. In one phrase: an evaluator-optimizer workflow with parallel fan-out.
 
 ## License

@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Deliberately has NO postgres service: the offline suite must prove it needs no database, and it
+  # cannot prove that in a job where one happens to be running.
+  api:
+    name: api (offline, py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the documented dev environment; 3.12 is what the Dockerfile builds on.
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: pip install -e "apps/api[dev]"
+
+      - name: Lint
+        run: ruff check apps/api
+
+      - name: Tests
+        run: pytest apps/api -q
+
+      - name: Tests with a hostile DATABASE_URL
+        # A developer's exported DATABASE_URL must never drag the suite onto a real database, and a
+        # dead one must not make it hang. conftest blanks the variable; this proves it.
+        env:
+          DATABASE_URL: postgresql://nobody:nobody@127.0.0.1:1/none
+        run: pytest apps/api -q
+        timeout-minutes: 3
+
+  postgres:
+    name: api (postgres)
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hyris
+          POSTGRES_PASSWORD: hyris
+          POSTGRES_DB: hyris
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U hyris -d hyris -h 127.0.0.1"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://hyris:hyris@localhost:5432/hyris
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e "apps/api[dev]"
+
+      - name: Migrate
+        working-directory: apps/api
+        run: alembic upgrade head
+
+      - name: Schema matches the models
+        working-directory: apps/api
+        # An empty autogenerate proves two things at once: nobody changed a model without writing a
+        # migration, AND env.py still filters langgraph's tables. Without that filter autogenerate
+        # emits drop_table('store') -- deleting every persisted learner profile.
+        run: |
+          alembic revision --autogenerate -m ci-drift-probe
+          probe=$(ls -t alembic/versions/*ci_drift_probe.py | head -1)
+          if grep -qE "op\.(create|drop|add|alter)_" "$probe"; then
+            echo "::error::Schema drift, or env.py stopped filtering langgraph's tables:"
+            cat "$probe"
+            exit 1
+          fi
+          rm "$probe"
+
+      - name: Tests against postgres
+        env:
+          HYRIS_TEST_DATABASE_URL: postgresql://hyris:hyris@localhost:5432/hyris
+        run: pytest apps/api -q
+
+  extension:
+    name: extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - name: Typecheck and build
+        run: npm run build --workspace @hyris/extension

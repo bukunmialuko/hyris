@@ -1,5 +1,6 @@
 """Central settings — no magic numbers in node code."""
 
+import re
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -15,6 +16,18 @@ class Settings(BaseSettings):
 
     # persistence (Postgres backends wired when DATABASE_URL is set)
     database_url: str = ""
+
+    # auth. Without a secret the API cannot mint tokens and every caller is "anonymous"; it will
+    # not fall back to a weak default, because a guessable signing key is worse than no auth at all.
+    auth_secret: str = ""
+    # Accept the legacy, FORGEABLE X-User-Id header. True while the extension still sends it; set
+    # false once every client registers a device token, and the header stops being trusted.
+    allow_header_identity: bool = True
+
+    # retention (days). Nothing prunes itself: checkpoints grow one thread per run forever, and
+    # quiz history one row per quiz. 0 disables pruning for that table.
+    checkpoint_retention_days: int = 30
+    quiz_retention_days: int = 365
 
     # pipeline limits
     hard_cap: int = 20                 # absolute max questions per quiz
@@ -33,3 +46,18 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+# SQLAlchemy spells a URL "postgresql+psycopg://…"; libpq rejects the "+driver" suffix, and also
+# rejects a non-lowercase scheme — so lowercase what we rewrite rather than echoing the input's case.
+_DIALECT = re.compile(r"^(postgres(?:ql)?)\+[a-z0-9_]+://", re.IGNORECASE)
+
+
+def normalize_dsn(url: str) -> str:
+    """A DATABASE_URL as libpq will parse it. SQLAlchemy keeps the "+psycopg" form; psycopg cannot."""
+    return _DIALECT.sub(lambda m: f"{m.group(1).lower()}://", url.strip())
+
+
+def postgres_dsn() -> str:
+    """The libpq DSN for the LangGraph store, or "" when persistence is switched off."""
+    return normalize_dsn(get_settings().database_url)

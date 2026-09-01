@@ -1,11 +1,16 @@
 """Test doubles: a deterministic fake LLM, fake moderation, and a fake fetched page.
 
-No test in this suite touches the network or needs an API key.
+No test in this suite touches the network or a database, or needs an API key.
 """
 
+import os
 import re
 
 import pytest
+
+# Blank DATABASE_URL before any Settings() is built. An env var set to the empty string outranks a
+# .env value in pydantic-settings, so a developer's local database cannot leak into the suite.
+os.environ["DATABASE_URL"] = ""
 
 ARTICLE = (
     "The transformer replaces recurrence with self-attention, letting every token attend to "
@@ -95,3 +100,13 @@ def fake_page(monkeypatch):
     monkeypatch.setattr(cp.trafilatura, "extract", lambda *a, **k: ARTICLE)
     monkeypatch.setattr(cp.trafilatura, "extract_metadata", lambda html: Meta())
     return ARTICLE
+
+
+@pytest.fixture(autouse=True)
+def _reset_sessions():
+    """deps._sessions is a module global installed by the lifespan. Without this, a test that sets
+    it leaks a live session factory into every test that runs after it."""
+    from app import deps
+
+    yield
+    deps.set_sessions(None)

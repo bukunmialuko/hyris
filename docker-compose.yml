@@ -6,24 +6,35 @@ services:
       POSTGRES_PASSWORD: hyris
       POSTGRES_DB: hyris
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hyris"]
+      # -h 127.0.0.1 is load-bearing: without it pg_isready probes the unix socket, and the postgres
+      # image's first-boot temp server runs with listen_addresses='' — socket only. On a virgin
+      # pgdata the db reports healthy while TCP is refused, and a fail-fast api aborts on boot.
+      test: ["CMD-SHELL", "pg_isready -U hyris -d hyris -h 127.0.0.1"]
       interval: 5s
       timeout: 3s
       retries: 10
+      start_period: 10s
 
   api:
     build: ./apps/api
+    restart: unless-stopped
+    # Migrate before serving. depends_on already gates this on the db being healthy.
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+psycopg://hyris:hyris@db:5432/hyris
+      # libpq parses this string directly: no SQLAlchemy "+psycopg" suffix.
+      DATABASE_URL: postgresql://hyris:hyris@db:5432/hyris
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}
       LLM_MODEL: ${LLM_MODEL:-gpt-5-mini}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      AUTH_SECRET: ${AUTH_SECRET:-}
     env_file:
       - .env
     depends_on:
