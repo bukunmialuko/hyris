@@ -3,6 +3,9 @@
 // The popup opens the side panel itself (sidePanel.open needs a live user
 // gesture, which is gone by the time this fetch resolves). Here we only publish
 // generation state to session storage; the panel renders whatever it sees.
+//
+// The run is owned here rather than in the panel so it survives the panel being
+// closed mid-generation — an LLM pipeline can take 30 to 90 seconds.
 
 import { ConfigError, generateQuiz } from "../lib/api";
 import { extractFromTab } from "../lib/extract";
@@ -28,14 +31,19 @@ async function setStatus(status: QuizStatus) {
 async function runGeneration(profile: QuizProfile, tabId: number) {
   const runId = Date.now();
   await chrome.storage.session.remove(QUIZ_KEY);
-  await setStatus({ state: "loading", runId, profile, tabId });
+  await setStatus({ state: "loading", runId, profile, tabId, steps: [] });
 
   try {
     const page = await extractFromTab(tabId).catch(() => {
       throw new PageError("Can’t read this page. Try a normal web page, or reload this one.");
     });
-    const { quiz, source } = await generateQuiz(page, profile);
-    if (!quiz?.quiz?.questions?.length) throw new Error("The quiz came back empty.");
+
+    // Republish on each poll; the panel re-renders off chrome.storage.onChanged.
+    const { quiz, source } = await generateQuiz(page, profile, (steps) => {
+      void setStatus({ state: "loading", runId, profile, tabId, steps });
+    });
+
+    if (!quiz?.questions?.length) throw new Error("The quiz came back empty.");
 
     await chrome.storage.session.set({ [QUIZ_KEY]: quiz });
     await setStatus({ state: "ready", runId, profile, tabId, source });

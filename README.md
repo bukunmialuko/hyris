@@ -4,7 +4,6 @@ Turn any web page into a personalized quiz. V1 is a LangGraph agent that plans, 
 
 ▶️ **[Try the live prototype](https://bukunmialuko.github.io/hyris/)** (no install required)
 
-
 | Aspect | V1 |
 |---|---|
 | Source of truth | The current page only |
@@ -25,21 +24,9 @@ V1 composes three — deliberately stopping short of an autonomous agent:
 | Evaluator-optimizer | The signature loop: `generate_questions` optimizes, `critique_questions` evaluates, repair feeds verdicts back (max 2 rounds) |
 | ReAct agent | Not in V1 — reserved for the V2 fact-check button, embedded as a single node |
 
-## Structure
-
-```
-apps/extension    Chrome extension (MV3, React + Vite + TS)
-apps/api          FastAPI backend (agents: generate → critique → validate)
-packages/contracts  Shared quiz JSON schema + fixtures (single source of truth)
-design/           Interactive HTML prototype (deployed to GitHub Pages)
-research/         Jupyter notebooks for agent prototyping
-docs/             Architecture notes
-```
-
 ## Local development
 
-One conda env covers all the Python here — the API, its dev tooling, and the `research/`
-notebooks. Create it once, then just `conda activate agents` whenever you work on Hyris:
+One conda env covers all the Python here — the API, its tooling, and the `research/` notebooks.
 
 ```bash
 conda create -n agents python=3.11 -y
@@ -47,112 +34,59 @@ conda activate agents
 pip install -e "apps/api[dev]" -r research/requirements.txt
 ```
 
-`-e` installs the API in editable mode, so `import app.…` resolves to your working tree and
-code changes take effect without reinstalling. `[dev]` adds pytest, httpx and ruff.
-
 Then, with the env active:
 
 ```bash
-# Extension
+# Extension — then load apps/extension/dist as an unpacked extension
 npm install
-npm run dev:ext          # then load apps/extension/dist as unpacked extension
+npm run dev:ext
 
-# API (copy .env.example to .env and set OPENAI_API_KEY first)
+# API — copy .env.example to .env and set OPENAI_API_KEY first
 uvicorn app.main:app --reload --app-dir apps/api
 
-# Identities: without AUTH_SECRET every caller is "anonymous" and POST /auth/device returns 503.
-#   export AUTH_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
-# The extension registers once at POST /auth/device and sends Authorization: Bearer thereafter.
-# X-User-Id still works but is forgeable — set ALLOW_HEADER_IDENTITY=false to refuse it.
-
-# Learner profiles survive restarts only when DATABASE_URL is set (see .env.example):
-#   docker compose up -d db
-#   export DATABASE_URL=postgresql://hyris:hyris@localhost:5433/hyris
-#   (cd apps/api && alembic upgrade head)   # creates users/quizzes/attempts
-# DATABASE_URL must be EXPORTED for alembic: Settings reads .env relative to the CWD, and the
-# .env lives at the repo root, not in apps/api.
-# Leave it unset and the API logs a warning and keeps learner memory in-process.
-# Caveat: with DATABASE_URL set and Postgres NOT running, the API refuses to start — and under
-# --reload uvicorn does not exit, so it hangs instead of aborting. Start the db, or unset the var.
-
-# Or run everything in Docker (API + Postgres) — no conda env needed
+# Or run everything in Docker (API + Postgres), no conda env needed
 docker compose up --build
 
-# Tests (no API key needed — the suite runs on a fake LLM)
+# Tests (no API key needed — the suite runs on a fake LLM) and lint
 pytest apps/api
-
-# Lint
+npm run test:ext
 ruff check apps/api
-
-# Prune aged-out checkpoints and quizzes (a scheduled command, not a background timer).
-# Retention is CHECKPOINT_RETENTION_DAYS / QUIZ_RETENTION_DAYS; 0 disables either.
-cd apps/api && python -m app.prune
 ```
 
-CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs the same checks on every push and PR:
-lint and the offline suite on Python 3.11 and 3.12, the suite again against a real Postgres, and the
-extension typecheck and build. The Postgres job also runs `alembic revision --autogenerate` and fails
-if it is not empty — which catches both a model changed without a migration and `alembic/env.py`
-losing the filter that keeps autogenerate away from langgraph's own `store` tables.
+Two environment variables shape behaviour:
 
-### Editor setup
+- `AUTH_SECRET` — without it every caller is `anonymous` and `POST /auth/device` returns 503.
+- `DATABASE_URL` — without it memory is in-process. With it, run `docker compose up -d db` and
+  `(cd apps/api && alembic upgrade head)`; export the variable, since alembic reads the repo-root `.env`.
 
-[.vscode/settings.json](.vscode/settings.json) is committed and wires up the rest: it points
-Pylance at the `agents` env, puts `apps/api` on the analysis path, enables pytest discovery,
-and applies ruff fixes on save. Install the three recommended extensions when VSCode offers
-them (Python, Pylance, Ruff).
+Retention is not automatic: `cd apps/api && python -m app.prune` deletes aged-out checkpoints and quizzes.
 
-Two things to know:
+VSCode is pre-wired by the committed [.vscode/settings.json](.vscode/settings.json) — install the
+recommended extensions (Python, Pylance, Ruff) and pick the `agents` interpreter if imports look unresolved.
 
-- The interpreter path in that file is `/opt/homebrew/anaconda3/envs/agents/bin/python`. If
-  your conda lives elsewhere, run `conda run -n agents which python` and update it — or just
-  use **Python: Select Interpreter** and pick `agents`.
-- If imports still show as unresolved, the env isn't selected. Check the interpreter in the
-  status bar with a `.py` file open, then **Developer: Reload Window**.
+## Using the API
 
-Ruff's rules live in [apps/api/pyproject.toml](apps/api/pyproject.toml) under `[tool.ruff]`,
-so the CLI and the editor always agree.
+Generation is asynchronous: `POST /quiz/generate` returns 202 with a `run_id`, then you poll or stream.
 
-## Trying the API (Postman or curl)
-
-Generation is asynchronous: start a run, then poll or stream.
+| Endpoint | What it does |
+|---|---|
+| `POST /auth/device` | Registers a device, returns `{user_id, token}` for `Authorization: Bearer` |
+| `POST /quiz/generate` | Starts a run from a `page_url` + profile; returns a `run_id` |
+| `GET /quiz/runs/{id}` | Poll: `status`, `steps` so far, final `quiz` or user-safe `error` |
+| `GET /quiz/runs/{id}/events` | Same progress as a live SSE stream |
+| `GET /quizzes` | This caller's past quizzes, newest first |
+| `POST /attempts` | Submits answers, scored server-side against the stored quiz |
 
 ```bash
-# 0. Register a device — returns {user_id, token}. Needs AUTH_SECRET; without it every caller is
-#    "anonymous" and this returns 503. The token is what makes an identity unforgeable.
-curl -X POST http://localhost:8000/auth/device
-TOKEN=...   # from the response
-
-# 1. Start a run — returns 202 with a run_id
 curl -X POST http://localhost:8000/quiz/generate \
   -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
   -d '{"page_url": "https://en.wikipedia.org/wiki/Photosynthesis",
        "profile": {"question_count": 4, "difficulty": "medium"}}'
-
-# 2a. Poll until status is done (Postman-friendly)
-curl http://localhost:8000/quiz/runs/<run_id> -H "Authorization: Bearer $TOKEN"
-
-# 2b. Or stream progress live (SSE)
-curl -N http://localhost:8000/quiz/runs/<run_id>/events
-
-# 3. This caller's past quizzes, newest first (limit 1..100)
-curl "http://localhost:8000/quizzes?limit=20" -H "Authorization: Bearer $TOKEN"
-
-# 4. Submit answers — scored server-side against the stored quiz, then mastery moves.
-#    Send an attempt_id to make a retry idempotent; without one a resubmit counts twice.
-curl -X POST http://localhost:8000/attempts \
-  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-  -d '{"quiz_id": "quiz_...", "answers": {"0": 2, "1": 0}}'
 ```
 
-The poll response carries `status` (running, done, failed), the `steps` completed so far, and the
-final `quiz` or a user-safe `error`. Omit the header entirely and you are `anonymous` — a single
-shared profile, which is why curl and Postman keep working without registering.
-
-Identity precedence is `Authorization: Bearer` first, then the legacy `X-User-Id` header, then
-`anonymous`. `X-User-Id` is **forgeable** — any caller can name any learner — so every use is logged
-and `ALLOW_HEADER_IDENTITY=false` refuses it outright. It exists only until the extension migrates
-to device tokens.
+Send no header and you are `anonymous` — one shared profile, which is why curl keeps working
+without registering. The legacy `X-User-Id` header is forgeable, so every use is logged and
+`ALLOW_HEADER_IDENTITY=false` refuses it outright.
 
 ## System design
 
@@ -175,19 +109,17 @@ flowchart LR
   API -- "attempts · mastery" --> DB
 ```
 
-Generation is asynchronous. The extension receives a `run_id` immediately and subscribes to
-progress updates, because an LLM pipeline can take 30 to 90 seconds, longer than MV3 service
-workers or plain HTTP requests reliably survive. The LangGraph runtime lives inside the
-FastAPI process as a single deployable, but it is kept as a separate module so it can be
-split out later.
+Generation is asynchronous because an LLM pipeline can take 30 to 90 seconds, longer than a plain
+HTTP request reliably survives. The extension polls rather than consuming the SSE stream because
+`EventSource` does not exist in an MV3 service worker — and keeping the run owned by the worker means
+it survives the side panel being closed mid-generation. The LangGraph runtime lives inside the
+FastAPI process as a single deployable, but stays a separate module so it can be split out later.
 
 ## Agent graph
 
-The LangGraph workflow fans out in parallel from START: the memory read runs while the page
-is fetched, and the branches meet at plan_quiz. Tools never raise; failures route to a
-graceful exit. Safety guardrails run as first-class nodes: an SSRF check
-before any fetch, input moderation before the article reaches an LLM, and output moderation
-of every question before delivery — all fail closed, so nothing unsafe ever ships.
+The workflow fans out in parallel from START: the memory read runs while the page is fetched, and
+the branches meet at `plan_quiz`. Tools never raise; failures route to a graceful exit. Safety
+guardrails are first-class nodes and all fail closed, so nothing unsafe ever ships.
 
 ```mermaid
 flowchart TB
@@ -239,21 +171,14 @@ different keys, so the fan-in needs no reducers.
 
 ## Memory model
 
-Three layers, one Postgres instance, all three live when `DATABASE_URL` is set. The app lifespan
-opens each one, runs its migrations, and closes it on shutdown; with the variable unset every layer
-falls back to its in-memory equivalent and the API still serves.
+Three layers, one Postgres instance, all live when `DATABASE_URL` is set; with it unset each falls
+back to an in-memory equivalent and the API still serves.
 
 | Layer | Kind | Backed by | What it does |
 |---|---|---|---|
 | Graph checkpoints | Thread | LangGraph `AsyncPostgresSaver` | Every node transition, per run: resumable, debuggable, and the reason a poll can be answered by a worker that did not run the graph |
 | Quiz and attempt history | Episodic | `quizzes`, `quiz_attempts` | Powers `GET /quizzes` and lets `POST /attempts` score against the stored quiz rather than trusting the client |
 | Learner profile | Semantic | LangGraph `PostgresStore` | Per-concept mastery (EMA over attempts) and per-domain question hashes, driving adaptive difficulty |
-
-The saver is the async one on purpose: the sync `PostgresSaver` inherits `aput`/`aget_tuple` from the
-base class, which raise `NotImplementedError`, and the graph is driven with `astream()`.
-
-Nothing prunes itself, so `python -m app.prune` deletes checkpoints and quizzes past their retention
-(`CHECKPOINT_RETENTION_DAYS`, `QUIZ_RETENTION_DAYS`; `0` disables either).
 
 The loop closes on every attempt: correct answers raise a concept's mastery, wrong answers
 lower it, and the next quiz on that topic plans around what changed.
@@ -278,9 +203,8 @@ Deferred to the API port: rate limiting, per-user cost caps, auth.
 The number of questions delivered is `min(requested, hard cap of 20, what the page supports)`.
 The planner ranks concepts by the learner's history: weak concepts come first, new material
 next, mastered concepts last and one Bloom level harder. When the page has fewer concepts
-than requested questions, the planner reuses rich concepts at other Bloom levels (define it,
-apply it, analyze it) before shrinking the quiz — and it never pads with trivia. The user is
-told only when the delivered count falls notably short.
+than requested questions, the planner reuses rich concepts at other Bloom levels before
+shrinking the quiz — and it never pads with trivia.
 
 Example: 6 questions requested from 3 concepts, difficulty hard, with one weak and one
 mastered concept in memory:
@@ -299,8 +223,7 @@ Every slot is a unique concept and Bloom level pair, so questions stay distinct.
 ## V1 scope
 
 Chrome Extension + FastAPI + LangGraph agent + LLM + PostgreSQL. The current page is the only
-source of truth. One tool (`clean_page`) and three memory layers — graph checkpoints, quiz and
-attempt history, and a learner profile that adapts difficulty over time — all persisted. No web search, no
+source of truth. One tool (`clean_page`) and three memory layers, all persisted. No web search, no
 RAG, no microservices. In one phrase: an evaluator-optimizer workflow with parallel fan-out.
 
 ## License
