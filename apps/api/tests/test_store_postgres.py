@@ -105,25 +105,34 @@ def _users_table_exists(engine) -> bool:
     return inspect(engine).has_table("users")
 
 
-def test_get_or_create_is_idempotent(monkeypatch):
-    """The real upsert against real Postgres: two sightings of a new id must leave exactly one row."""
+def test_get_or_create_is_idempotent():
+    """The real upsert against real Postgres: persisting two quizzes for a new learner must leave
+    exactly one users row.
+
+    Get-or-create lives in record_quiz_row, not in the identity dependency: dependencies resolve
+    before body validation, so writing there minted a row on every 422. record_quiz_row has to
+    upsert the user anyway, because quizzes.user_id is a NOT NULL foreign key.
+    """
     from sqlalchemy import text
     from sqlalchemy.orm import sessionmaker
 
-    from app import deps
+    from app.services.quizzes import record_quiz_row
 
     engine = _users_engine()
     if not _users_table_exists(engine):
         pytest.skip("run `alembic upgrade head` from apps/api first")
     user = f"pytest_{uuid.uuid4().hex[:8]}"
-    monkeypatch.setattr(deps, "_sessions", sessionmaker(engine, expire_on_commit=False))
+    sessions = sessionmaker(engine, expire_on_commit=False)
     try:
-        deps._ensure_user(user)
-        deps._ensure_user(user)  # second sight: ON CONFLICT DO NOTHING, not a duplicate key
+        for n in range(2):
+            record_quiz_row(sessions, user, "https://example.org/a",
+                            {"id": f"quiz_{uuid.uuid4().hex[:12]}", "title": f"T{n}", "questions": []})
         with engine.connect() as c:
             rows = c.execute(text("select count(*) from users where id = :u"), {"u": user}).scalar()
             tz = c.execute(text("select created_at from users where id = :u"), {"u": user}).scalar()
-        assert rows == 1
+            quizzes = c.execute(text("select count(*) from quizzes where user_id = :u"), {"u": user}).scalar()
+        assert rows == 1, "the second quiz must not create a second user"
+        assert quizzes == 2
         assert tz.tzinfo is not None, "created_at must be timezone-aware"
     finally:
         with engine.begin() as c:
