@@ -173,9 +173,19 @@ def generate_questions(
 
 
 def schema_gate(
-    questions: list[QuizQuestion], blueprint: list[Slot], recent_hashes: list[str]
+    questions: list[QuizQuestion],
+    blueprint: list[Slot],
+    recent_hashes: list[str],
+    allow_repeats: bool = False,
 ) -> tuple[list[QuizQuestion], list[Slot], str]:
-    """(valid, missing_slots, feedback). Deterministic and free."""
+    """(valid, missing_slots, feedback). Deterministic and free.
+
+    Two kinds of rejection, and they are not equally serious. A malformed question can never ship.
+    A well-formed question the learner has seen before is only *undesirable* -- and once the retry
+    budget is spent, shipping it beats shipping nothing, which is what `allow_repeats` is for. Told
+    otherwise, a returning learner on a page they already quizzed gets every question rejected, the
+    run finishes with zero questions, and the guard blames the page for their own history.
+    """
     recent = set(recent_hashes)
     want = {s["slot_id"] for s in blueprint}
     valid: list[QuizQuestion] = []
@@ -183,20 +193,22 @@ def schema_gate(
     seen: set[str] = set()
     for q in questions or []:
         h = qhash(q.get("question", ""))
-        bad = (
+        malformed = (
             q.get("slot_id") not in want
             or len(q.get("options", [])) != 4
             or len(set(q["options"])) != 4
             or not 0 <= q.get("correct_answer", -1) < 4
-            or h in recent
             or h in seen
             or any(v["slot_id"] == q["slot_id"] for v in valid)
         )
-        if bad:
+        if malformed:
             reasons.append(f"slot {q.get('slot_id')}: invalid or duplicate")
-        else:
-            seen.add(h)
-            valid.append(q)
+            continue
+        if h in recent and not allow_repeats:
+            reasons.append(f"slot {q.get('slot_id')}: repeats a question this learner has seen")
+            continue
+        seen.add(h)
+        valid.append(q)
     missing = [s for s in blueprint if s["slot_id"] not in {q["slot_id"] for q in valid}]
     return valid, missing, "; ".join(reasons)
 

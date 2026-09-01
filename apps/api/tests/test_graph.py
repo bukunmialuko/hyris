@@ -96,3 +96,50 @@ def test_moderation_outage_fails_closed(fake_llm, fake_page):
     graph = build_graph(llm=fake_llm, moderation=broken)
     final = run(graph)
     assert final["quiz"] == {} and "Safety check unavailable" in final["error"]
+
+
+def test_returning_learner_still_gets_a_quiz(fake_page):
+    """The dedup-starvation regression.
+
+    A learner who quizzes the same page twice used to get every regenerated question rejected as a
+    repeat, exhaust the retry budget, finish with zero questions, and be told the PAGE was
+    unsuitable -- a moderation message for what was really their own history. Novelty is worth two
+    regeneration rounds, not the whole quiz.
+    """
+    store = InMemoryStore()
+
+    def visit(thread):
+        graph = build_graph(MemorySaver(), store, llm=FakeLLM(), moderation=fake_moderation)
+        return run(graph, {**INPUTS, "user_id": "repeat_user"}, thread=thread)
+
+    first = visit("v1")
+    assert len(first["quiz"]["questions"]) == 3
+
+    second = visit("v2")  # same learner, same page: every question now hashes as a repeat
+    assert not second.get("error"), "a repeat visit must not fail"
+    assert len(second["quiz"]["questions"]) == 3
+    assert "end_gracefully" not in second["_steps"]
+
+
+def test_malformed_questions_are_still_rejected_on_the_last_attempt(fake_page):
+    """allow_repeats must soften ONLY the history check. A broken question can never ship."""
+    from app.agent.nodes import schema_gate
+
+    blueprint = [{"slot_id": 0, "concept": "c", "bloom_level": "apply", "is_variant": False}]
+    broken = [{"slot_id": 0, "question": "Q?", "options": ["a", "a", "b", "c"],
+               "correct_answer": 0, "explanation": ""}]
+    valid, missing, _ = schema_gate(broken, blueprint, [], allow_repeats=True)
+    assert valid == [] and len(missing) == 1
+
+
+def test_an_empty_quiz_does_not_blame_the_page(fake_llm, fake_page, monkeypatch):
+    """moderate_quiz([]) returns the "unsuitable page" message; generation producing nothing is a
+    different failure and must say so."""
+    from app.agent import nodes
+
+    monkeypatch.setattr(nodes, "schema_gate", lambda *a, **k: ([], [], "nothing survived"))
+    graph = build_graph(llm=fake_llm, moderation=fake_moderation)
+    final = run(graph)
+    assert final["quiz"] == {}
+    assert "Couldn't write questions" in final["error"]
+    assert "isn't suitable" not in final["error"]
