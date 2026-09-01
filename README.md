@@ -60,6 +60,11 @@ npm run dev:ext          # then load apps/extension/dist as unpacked extension
 # API (copy .env.example to .env and set OPENAI_API_KEY first)
 uvicorn app.main:app --reload --app-dir apps/api
 
+# Identities: without AUTH_SECRET every caller is "anonymous" and POST /auth/device returns 503.
+#   export AUTH_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+# The extension registers once at POST /auth/device and sends Authorization: Bearer thereafter.
+# X-User-Id still works but is forgeable — set ALLOW_HEADER_IDENTITY=false to refuse it.
+
 # Learner profiles survive restarts only when DATABASE_URL is set (see .env.example):
 #   docker compose up -d db
 #   export DATABASE_URL=postgresql://hyris:hyris@localhost:5433/hyris

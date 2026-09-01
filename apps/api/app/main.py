@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import deps
-from app.routers import attempts, history, quiz
+from app.routers import attempts, auth, history, quiz
 from app.services.persistence import checkpointer_lifespan, engine_lifespan, store_lifespan
 from app.services.runs import registry
 
@@ -58,6 +58,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(quiz.router, prefix="/quiz", tags=["quiz"])
 app.include_router(history.router, prefix="/quizzes", tags=["quizzes"])
 app.include_router(attempts.router, prefix="/attempts", tags=["attempts"])

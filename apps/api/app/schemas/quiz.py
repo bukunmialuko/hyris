@@ -98,3 +98,8 @@ class AttemptResult(BaseModel):
     score: int
     total: int
     results: list[QuestionResult]
+
+
+class DeviceToken(BaseModel):
+    user_id: str
+    token: str

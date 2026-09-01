@@ -34,6 +34,7 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}
       LLM_MODEL: ${LLM_MODEL:-gpt-5-mini}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      AUTH_SECRET: ${AUTH_SECRET:-}
     env_file:
       - .env
     depends_on:

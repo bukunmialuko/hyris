@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     # persistence (Postgres backends wired when DATABASE_URL is set)
     database_url: str = ""
 
+    # auth. Without a secret the API cannot mint tokens and every caller is "anonymous"; it will
+    # not fall back to a weak default, because a guessable signing key is worse than no auth at all.
+    auth_secret: str = ""
+    # Accept the legacy, FORGEABLE X-User-Id header. True while the extension still sends it; set
+    # false once every client registers a device token, and the header stops being trusted.
+    allow_header_identity: bool = True
+
     # pipeline limits
     hard_cap: int = 20                 # absolute max questions per quiz
     max_words: int = 6000              # article words reaching the LLM

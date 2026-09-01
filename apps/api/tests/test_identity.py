@@ -113,3 +113,109 @@ def test_identity_does_not_write_a_users_row(client, monkeypatch):
     monkeypatch.setattr(deps, "_sessions", lambda: called.append(1))
     client.get("/who", headers={"X-User-Id": "brand-new-caller"})
     assert called == []
+
+
+# ---------------------------------------------------------------- device tokens
+
+# Long enough to satisfy the RFC 7518 minimum the service enforces.
+SECRET = "test-secret-not-a-real-one-but-long-enough-to-sign-with"
+
+
+@pytest.fixture
+def signed(monkeypatch):
+    """A configured signing secret, plus a helper to mint tokens with it."""
+    from app.config import Settings
+    from app.services import auth
+
+    monkeypatch.setattr(auth, "get_settings", lambda: Settings(auth_secret=SECRET))
+    return auth
+
+
+def test_registering_a_device_returns_a_token_for_an_id_the_caller_did_not_choose(signed):
+    from app.routers.auth import register_device
+
+    a, b = register_device(), register_device()
+    assert a.user_id != b.user_id
+    assert signed.read_token(a.token) == a.user_id
+
+
+def test_a_bearer_token_identifies_its_owner(client, signed):
+    from app.routers.auth import register_device
+
+    d = register_device()
+    r = client.get("/who", headers={"Authorization": f"Bearer {d.token}"})
+    assert r.json() == {"user_id": d.user_id}
+
+
+def test_a_token_this_server_did_not_sign_is_rejected(client, signed):
+    """The whole point: a caller cannot mint an identity, only present one."""
+    import jwt
+
+    other = "a-different-secret-of-perfectly-adequate-length"
+    forged = jwt.encode({"sub": "someone-elses-id"}, other, algorithm="HS256")
+    assert client.get("/who", headers={"Authorization": f"Bearer {forged}"}).status_code == 401
+
+
+def test_a_tampered_token_is_rejected(client, signed):
+    from app.routers.auth import register_device
+
+    tampered = register_device().token[:-2] + ("aa" if not register_device().token.endswith("aa") else "bb")
+    assert client.get("/who", headers={"Authorization": f"Bearer {tampered}"}).status_code == 401
+
+
+def test_a_bad_token_never_falls_back_to_anonymous(client, signed):
+    """A caller who presented a token meant to be someone. Silently demoting them to the shared
+    anonymous profile would write history they could never read back."""
+    r = client.get("/who", headers={"Authorization": "Bearer rubbish"})
+    assert r.status_code == 401
+    assert r.json() != {"user_id": ANONYMOUS}
+
+
+@pytest.mark.parametrize("value", ["token-without-scheme", "Basic abc", "Bearer"])
+def test_a_malformed_authorization_header_is_rejected(client, signed, value):
+    assert client.get("/who", headers={"Authorization": value}).status_code == 401
+
+
+def test_without_a_secret_no_token_can_be_issued(monkeypatch):
+    """No weak default: a guessable signing key would make every identity forgeable while looking
+    secure, so the endpoint refuses instead."""
+    from fastapi import HTTPException
+
+    from app.config import Settings
+    from app.routers import auth as auth_router
+    from app.services import auth as auth_service
+
+    monkeypatch.setattr(auth_service, "get_settings", lambda: Settings(auth_secret=""))
+    with pytest.raises(HTTPException) as exc:
+        auth_router.register_device()
+    assert exc.value.status_code == 503
+
+
+def test_the_legacy_header_still_works_but_is_announced(client, caplog):
+    """Kept only while the extension still sends it."""
+    r = client.get("/who", headers={"X-User-Id": "legacy-caller"})
+    assert r.json() == {"user_id": "legacy-caller"}
+    assert "forgeable" in caplog.text
+
+
+def test_the_legacy_header_can_be_switched_off(client, monkeypatch):
+    from app import deps as deps_mod
+    from app.config import Settings
+
+    monkeypatch.setattr(deps_mod, "get_settings", lambda: Settings(allow_header_identity=False))
+    assert client.get("/who", headers={"X-User-Id": "legacy-caller"}).status_code == 401
+
+
+def test_a_short_secret_is_refused(monkeypatch):
+    """PyJWT only warns about an under-length HMAC key. A brute-forceable secret makes every
+    identity forgeable while the system looks authenticated, so this refuses outright."""
+    from fastapi import HTTPException
+
+    from app.config import Settings
+    from app.routers import auth as auth_router
+    from app.services import auth as auth_service
+
+    monkeypatch.setattr(auth_service, "get_settings", lambda: Settings(auth_secret="hunter2"))
+    with pytest.raises(HTTPException) as exc:
+        auth_router.register_device()
+    assert exc.value.status_code == 503 and "32 bytes" in str(exc.value.detail)
