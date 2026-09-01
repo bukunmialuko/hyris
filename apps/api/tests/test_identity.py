@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from app import deps
-from app.deps import ANONYMOUS, CurrentUserId, _ensure_user, current_user_id
+from app.deps import ANONYMOUS, CurrentUserId, current_user_id
 
 # Values that would corrupt a LangGraph store namespace. "." is the dangerous one: PostgresStore
 # dot-joins namespaces and matches them as a LIKE prefix, so "alice.mastery" cross-reads "alice".
@@ -79,57 +79,6 @@ def test_repeated_header_is_rejected(client):
     assert r.status_code == 400
 
 
-class _FakeSession:
-    def __init__(self, log, boom=False):
-        self.log, self.boom = log, boom
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-    def execute(self, stmt):
-        from sqlalchemy.dialects import postgresql
-
-        sql = str(stmt.compile(dialect=postgresql.dialect()))
-        if self.boom:
-            from sqlalchemy.exc import OperationalError
-
-            raise OperationalError("SELECT 1", {}, Exception("database is gone"))
-        self.log.append(sql)
-
-    def commit(self):
-        pass
-
-
-def test_ensure_user_issues_an_idempotent_upsert(monkeypatch):
-    log = []
-    monkeypatch.setattr(deps, "_sessions", lambda: _FakeSession(log))
-    _ensure_user("u1")
-    _ensure_user("u1")  # second sight must be the same statement, not a read-then-write
-    assert len(log) == 2
-    assert all("ON CONFLICT (id) DO NOTHING" in s for s in log)
-
-
-def test_ensure_user_is_a_noop_without_a_session_factory(monkeypatch):
-    monkeypatch.setattr(deps, "_sessions", None)
-    _ensure_user("u1")  # must not raise
-
-
-def test_ensure_user_swallows_a_dead_database(monkeypatch, caplog):
-    monkeypatch.setattr(deps, "_sessions", lambda: _FakeSession([], boom=True))
-    _ensure_user("u1")
-    assert "users row not recorded" in caplog.text
-
-
-def test_dead_database_does_not_leak_the_user_id(monkeypatch, caplog):
-    """The id is the closest thing to a credential this system has; it must not reach the log."""
-    monkeypatch.setattr(deps, "_sessions", lambda: _FakeSession([], boom=True))
-    _ensure_user("secret-user-id")
-    assert "secret-user-id" not in caplog.text
-
-
 def test_lifespan_installs_the_session_factory():
     """The composition root, not just the function: httpx.ASGITransport never runs lifespan."""
     from app.main import app
@@ -152,3 +101,15 @@ def test_concept_survives_the_api_boundary():
     })
     q = status.quiz.questions[0]
     assert q.concept == "self-attention" and q.bloom_level == "apply"
+
+
+def test_identity_does_not_write_a_users_row(client, monkeypatch):
+    """Dependencies resolve before body validation, so writing here meant a malformed request with a
+    fresh header minted a row for a caller that never did anything. The row is created on first
+    persist instead (services.quizzes.record_quiz_row upserts it alongside the quiz)."""
+    from app import deps
+
+    called = []
+    monkeypatch.setattr(deps, "_sessions", lambda: called.append(1))
+    client.get("/who", headers={"X-User-Id": "brand-new-caller"})
+    assert called == []

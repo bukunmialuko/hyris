@@ -122,3 +122,33 @@ def test_resubmitting_an_attempt_id_does_not_move_mastery_twice(monkeypatch):
     _, first = record_attempt(sessions, "quiz_1", {}, [], attempt_id="att_1")
     _, second = record_attempt(sessions, "quiz_1", {}, [], attempt_id="att_1")
     assert first is True and second is False
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("Calvin cycle", "calvin cycle"),
+        ("  calvin   cycle  ", "calvin cycle"),
+        ("Calvin Cycle.", "calvin cycle"),
+        ("CALVIN CYCLE", "calvin cycle"),
+    ],
+)
+def test_concept_keys_are_canonical(raw, expected):
+    """Mastery only accumulates once the SAME key recurs (min_seen), so labels that differ only by
+    case, spacing or punctuation must not start separate concepts. A real run produced
+    'Calvin cycle / light-independent reactions fix CO2 using ATP and NADPH' -- a phrase that would
+    never recur -- which is why the prompt now asks for canonical labels and this normalises them."""
+    from app.agent.tools.memory import normalize_concept
+
+    assert normalize_concept(raw) == expected
+
+
+def test_mastery_accumulates_across_differently_cased_labels():
+    store = InMemoryStore()
+    from app.agent.tools.memory import update_mastery
+
+    update_mastery(store, "u1", "Calvin cycle", True)
+    update_mastery(store, "u1", "calvin  CYCLE.", True)
+    rows = {i.key: i.value for i in store.search(("users", "u1", "mastery"), limit=10)}
+    assert list(rows) == ["calvin cycle"], "variants must land on one key"
+    assert rows["calvin cycle"]["seen"] == 2, "and must accumulate, so min_seen can be reached"

@@ -13,6 +13,10 @@ def wrap_article(text: str) -> str:
 ANALYZE_SYS = (
     """You are analyzing an article to prepare a quiz.
 Extract the concepts worth testing: key ideas, claims, mechanisms, relationships. Not trivia.
+Name each concept as a SHORT canonical topic label -- the term a textbook index would use, at most
+four words, no punctuation, no explanation. "calvin cycle", not "the Calvin cycle fixes CO2 using
+ATP and NADPH". The label is a durable key for tracking what a learner has mastered across many
+articles, so it must be the kind of phrase that recurs, not a description of this one sentence.
 For each concept copy a short VERBATIM quote as supporting_span and rate salience 0..1.
 Then judge sufficiency for {n} questions: one rich concept can support several distinct
 questions at different cognitive levels, so max_supportable_questions counts question

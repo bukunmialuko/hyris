@@ -20,6 +20,18 @@ logger = logging.getLogger(__name__)
 MASTERY_SCAN = 500      # concepts scanned when classifying mastered/weak
 HISTORY_SCAN = 1000     # quiz_history rows pulled before the newest-first sort
 RECENT_HASHES = 100     # question hashes handed to the planner
+CONCEPT_MAX = 80        # a mastery key is a label, not a sentence
+
+
+def normalize_concept(name: str) -> str:
+    """A stable mastery key.
+
+    Mastery is keyed on this string and only counts once the SAME key recurs (settings.min_seen), so
+    a label that varies by case, spacing or a trailing full stop silently starts a new concept and
+    the learner never accumulates any history. The prompt asks for short canonical labels; this
+    makes near-misses land on the same key anyway.
+    """
+    return " ".join(name.strip().lower().strip(".,;:!?").split())[:CONCEPT_MAX]
 
 
 def qhash(question: str) -> str:
@@ -80,6 +92,7 @@ def update_mastery(store: BaseStore, user_id: str, concept: str, correct: bool) 
     """EMA mastery update, called when an attempt is submitted."""
     s = get_settings()
     ns = ("users", user_id, "mastery")
+    concept = normalize_concept(concept)
     item = store.get(ns, concept)
     rec = item.value if item else {"score": 0.5, "seen": 0, "correct": 0}
     rec["score"] = round((1 - s.mastery_alpha) * rec["score"] + s.mastery_alpha * correct, 3)

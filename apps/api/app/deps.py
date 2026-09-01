@@ -10,11 +10,9 @@ import re
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.models.entities import USER_ID_MAX, User
+from app.models.entities import USER_ID_MAX
 
 logger = logging.getLogger(__name__)
 
@@ -71,38 +69,20 @@ def get_sessions() -> sessionmaker[Session] | None:
 Sessions = Annotated["sessionmaker[Session] | None", Depends(get_sessions)]
 
 
-def _ensure_user(user_id: str) -> None:
-    """Get-or-create, best effort.
-
-    One statement, no read-then-write: two requests racing the same first sight both run this, one
-    inserts and the other no-ops on the primary key. SELECT-then-INSERT would race into a duplicate
-    key error, and catching that IntegrityError leaves the transaction aborted, so every later
-    statement on the session raises InFailedSqlTransaction until a rollback.
-    """
-    if _sessions is None:
-        return
-    try:
-        with _sessions() as session:
-            session.execute(pg_insert(User).values(id=user_id).on_conflict_do_nothing(index_elements=["id"]))
-            session.commit()
-    except SQLAlchemyError as e:
-        # A database that died after boot must not turn quiz generation into a 500. The id itself is
-        # not logged: under this step's own threat model it is the closest thing to a credential.
-        logger.warning("users row not recorded (%s): %s", type(e).__name__, e)
-
-
 def current_user_id(x_user_id: Annotated[str | None, Header()] = None) -> str:
-    """The caller's id, created in the users table on first sight.
+    """The caller's validated id.
 
-    Deliberately `def` and not `async def`: FastAPI runs a sync dependency in a threadpool, so the
-    blocking round-trip below never parks the event loop.
+    It does NOT write a users row. Dependencies resolve before body validation, so a malformed
+    request with a fresh header used to mint a row for a caller that never did anything -- an
+    unauthenticated write on every 422. The row is created when the caller first persists something
+    instead: app.services.quizzes.record_quiz_row upserts the user in the same transaction as the
+    quiz, which it has to do anyway because quizzes.user_id is a NOT NULL foreign key.
     """
     user_id = ANONYMOUS if x_user_id is None else x_user_id.strip()
     if len(user_id) > USER_ID_MAX or not _ALLOWED.fullmatch(user_id):
         # 400, never a silent downgrade to anonymous: a caller whose id was quietly replaced would
         # write a quiz history it can never read back.
         raise HTTPException(400, f"X-User-Id must be 1-{USER_ID_MAX} characters from A-Z a-z 0-9 _ -")
-    _ensure_user(user_id)
     return user_id
 
 

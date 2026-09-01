@@ -16,7 +16,7 @@ from app.agent.state import (
     QuizState,
     Slot,
 )
-from app.agent.tools.memory import qhash
+from app.agent.tools.memory import normalize_concept, qhash
 from app.config import get_settings
 
 # ---------------------------------------------------------------- structured outputs
@@ -63,6 +63,9 @@ def analyze_page(llm, clean_text: str, title: str, requested: int) -> QuizState:
         for c in out["concepts"]:
             if _norm(c["supporting_span"]) in text_n:
                 c["salience"] = min(1.0, max(0.0, float(c["salience"])))
+                # Canonicalise here, at the one place concepts enter the system, so the blueprint,
+                # the question's `concept` field and the mastery key are all the same string.
+                c["name"] = normalize_concept(c["name"])
                 grounded.append(c)
         if not grounded:
             return {"error": "Could not identify quiz-worthy concepts on this page."}
