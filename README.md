@@ -62,8 +62,8 @@ uvicorn app.main:app --reload --app-dir apps/api
 
 # Identities: without AUTH_SECRET every caller is "anonymous" and POST /auth/device returns 503.
 #   export AUTH_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
-# The extension registers once at POST /auth/device and sends Authorization: Bearer thereafter.
-# X-User-Id still works but is forgeable — set ALLOW_HEADER_IDENTITY=false to refuse it.
+# The extension registers once at POST /auth/device and sends Authorization: Bearer thereafter,
+# so ALLOW_HEADER_IDENTITY=false is safe to set. X-User-Id remains only for curl and Postman.
 
 # Learner profiles survive restarts only when DATABASE_URL is set (see .env.example):
 #   docker compose up -d db
@@ -80,6 +80,7 @@ docker compose up --build
 
 # Tests (no API key needed — the suite runs on a fake LLM)
 pytest apps/api
+npm run test:ext         # extension unit tests (vitest)
 
 # Lint
 ruff check apps/api
@@ -151,8 +152,8 @@ shared profile, which is why curl and Postman keep working without registering.
 
 Identity precedence is `Authorization: Bearer` first, then the legacy `X-User-Id` header, then
 `anonymous`. `X-User-Id` is **forgeable** — any caller can name any learner — so every use is logged
-and `ALLOW_HEADER_IDENTITY=false` refuses it outright. It exists only until the extension migrates
-to device tokens.
+and `ALLOW_HEADER_IDENTITY=false` refuses it outright. The extension no longer sends it; it survives
+only as a convenience for curl and Postman.
 
 ## System design
 
@@ -175,9 +176,11 @@ flowchart LR
   API -- "attempts · mastery" --> DB
 ```
 
-Generation is asynchronous. The extension receives a `run_id` immediately and subscribes to
-progress updates, because an LLM pipeline can take 30 to 90 seconds, longer than MV3 service
-workers or plain HTTP requests reliably survive. The LangGraph runtime lives inside the
+Generation is asynchronous. The extension receives a `run_id` immediately and polls it for the
+graph's real step names, because an LLM pipeline can take 30 to 90 seconds, longer than a plain
+HTTP request reliably survives. It polls rather than consuming the SSE stream because `EventSource`
+does not exist in an MV3 service worker — and keeping the run owned by the worker means it survives
+the side panel being closed mid-generation. The LangGraph runtime lives inside the
 FastAPI process as a single deployable, but it is kept as a separate module so it can be
 split out later.
 

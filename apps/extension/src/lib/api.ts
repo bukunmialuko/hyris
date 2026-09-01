@@ -1,6 +1,13 @@
-import type { Quiz, QuizQuestion, QuizResponse } from "@hyris/contracts";
+import type {
+  AttemptRequest,
+  AttemptResult,
+  Quiz,
+  QuizHistory,
+  RunCreated,
+  RunStatus,
+} from "@hyris/contracts";
 import type { PageContent } from "./extract";
-import { getUserId } from "./userId";
+import { authHeaders, forgetDevice } from "./identity";
 import { toContractProfile } from "./profile";
 import type { QuizProfile } from "./session";
 
@@ -20,19 +27,26 @@ export class ConfigError extends Error {
 }
 
 export interface QuizResult {
-  quiz: QuizResponse;
+  quiz: Quiz;
   source: string;
 }
 
-export async function generateQuiz(page: PageContent, profile: QuizProfile): Promise<QuizResult> {
+/** Called on every poll with the graph nodes finished so far. */
+export type OnProgress = (steps: string[]) => void;
+
+export async function generateQuiz(
+  page: PageContent,
+  profile: QuizProfile,
+  onProgress: OnProgress,
+): Promise<QuizResult> {
   if (QUIZ_URL) return { quiz: await fetchFixture(QUIZ_URL), source: "remote json" };
 
-  if (API_BASE) return { quiz: await generateViaApi(page, profile), source: "hyris api" };
+  if (API_BASE) return { quiz: await generateViaApi(page, profile, onProgress), source: "hyris api" };
 
   throw new ConfigError("No quiz source is configured. Set VITE_QUIZ_URL or VITE_API_BASE in .env, then rebuild.");
 }
 
-async function fetchFixture(url: string): Promise<QuizResponse> {
+async function fetchFixture(url: string): Promise<Quiz> {
   let r: Response;
   try {
     r = await fetch(url, { cache: "no-store" });
@@ -47,56 +61,59 @@ async function fetchFixture(url: string): Promise<QuizResponse> {
   }
 }
 
-
 // ---------------------------------------------------------------- live backend
-//
-// /quiz/generate is asynchronous: it answers 202 with a run id, then the graph runs in the
-// background. We poll result_url rather than consuming events_url, because EventSource is not
-// exposed in an MV3 service worker — which is where this code runs.
 
-/** 202 body from POST /quiz/generate. */
-interface RunCreated {
-  run_id: string;
-  result_url: string;
+/**
+ * One authenticated request, re-registering once on 401.
+ *
+ * A 401 means the token no longer verifies — almost always a rotated AUTH_SECRET. Dropping the
+ * device and registering again recovers silently; the learner loses their history, but the
+ * alternative is an extension that is permanently broken until reinstalled.
+ */
+async function authed(path: string, init: RequestInit = {}, retry = true): Promise<Response> {
+  const headers = { ...(init.headers as Record<string, string>), ...(await authHeaders(API_BASE)) };
+
+  let r: Response;
+  try {
+    r = await fetch(`${API_BASE}${path}`, { ...init, headers });
+  } catch {
+    throw new Error("Couldn’t reach the quiz service. Is it running?");
+  }
+
+  if (r.status === 401 && retry) {
+    await forgetDevice();
+    return authed(path, init, false);
+  }
+  return r;
 }
 
-/** GET /quiz/runs/{id}. `quiz` is the bare quiz, not the {quiz} envelope the contract uses. */
-interface RunStatus {
-  status: "running" | "done" | "failed";
-  quiz: (Omit<Quiz, "questions"> & { questions: ApiQuestion[] }) | null;
-  error: string | null;
-}
-
-/** The API keys questions by slot_id; the contract calls that field id. */
-type ApiQuestion = Omit<QuizQuestion, "id"> & { slot_id: number };
+const json = { "Content-Type": "application/json" };
 
 // Generation is several LLM round-trips (analyse, write, critique, and up to two repair rounds),
 // so the ceiling is generous. Poll gently and back off: a tight loop would just burn the service
 // worker's lifetime waiting on a model.
+//
+// We poll rather than consuming events_url because EventSource is not exposed in an MV3 service
+// worker, which is where this runs — and keeping the run owned by the worker means it survives the
+// side panel being closed. The poll response carries the same step names the SSE stream does.
 const POLL_TIMEOUT_MS = 180_000;
 const POLL_MIN_MS = 600;
 const POLL_MAX_MS = 3_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function generateViaApi(page: PageContent, profile: QuizProfile): Promise<QuizResponse> {
-  // Deliberately not caught: a storage failure must not silently merge this user's history into
-  // the shared "anonymous" profile. chrome.storage.sync also fails when sync is disabled or the
-  // user is signed out, and that should surface as the extension's normal error state.
-  const headers = { "Content-Type": "application/json", "X-User-Id": await getUserId() };
-
-  let started: Response;
-  try {
-    started = await fetch(`${API_BASE}/quiz/generate`, {
-      method: "POST",
-      headers,
-      // The API takes the page URL and fetches the article itself; it does not want our extracted
-      // text. Identity travels in the header, never the body.
-      body: JSON.stringify({ page_url: page.url, profile: toContractProfile(profile) }),
-    });
-  } catch {
-    throw new Error("Couldn’t reach the quiz service. Is it running?");
-  }
+async function generateViaApi(
+  page: PageContent,
+  profile: QuizProfile,
+  onProgress: OnProgress,
+): Promise<Quiz> {
+  const started = await authed("/quiz/generate", {
+    method: "POST",
+    headers: json,
+    // The API takes the page URL and fetches the article itself; it does not want our extracted
+    // text. Identity travels in the header, never the body.
+    body: JSON.stringify({ page_url: page.url, profile: toContractProfile(profile) }),
+  });
   if (!started.ok) throw new Error(`The quiz service answered ${started.status}.`);
 
   const { result_url } = (await started.json()) as RunCreated;
@@ -107,23 +124,51 @@ async function generateViaApi(page: PageContent, profile: QuizProfile): Promise<
     await sleep(wait);
     wait = Math.min(wait * 1.5, POLL_MAX_MS);
 
-    const r = await fetch(`${API_BASE}${result_url}`, { headers, cache: "no-store" });
+    const r = await authed(result_url, { cache: "no-store" });
     if (!r.ok) throw new Error(`The quiz service answered ${r.status}.`);
     const run = (await r.json()) as RunStatus;
+
+    onProgress(run.steps ?? []);
 
     if (run.status === "failed") throw new Error(run.error ?? "The quiz run failed.");
     if (run.status === "done") {
       if (!run.quiz?.questions?.length) throw new Error("The quiz came back empty.");
-      return { quiz: toContractQuiz(run.quiz) };
+      return run.quiz;
     }
   }
   throw new Error("The quiz took too long. Try again.");
 }
 
-/** Wrap the bare quiz in the contract's envelope and give each question the id the contract wants. */
-function toContractQuiz(q: NonNullable<RunStatus["quiz"]>): Quiz {
-  return {
-    ...q,
-    questions: q.questions.map(({ slot_id, ...rest }) => ({ ...rest, id: String(slot_id) })),
-  };
+// -------------------------------------------------------------------- attempts
+
+/**
+ * Submit answers for server-side scoring. The server scores against the quiz it stored rather than
+ * trusting us, and moves per-concept mastery — which is what makes the next quiz adapt.
+ *
+ * `attemptId` is an idempotency key: resubmitting the same one records nothing and moves no
+ * mastery, so a retried request cannot double-count. A genuine retake must pass a fresh one.
+ */
+export async function submitAttempt(
+  quizId: string,
+  answers: Record<string, number>,
+  attemptId: string,
+): Promise<AttemptResult> {
+  const body: AttemptRequest = { quiz_id: quizId, answers, attempt_id: attemptId };
+  const r = await authed("/attempts", { method: "POST", headers: json, body: JSON.stringify(body) });
+
+  // 404 means the quiz was never persisted, which is every run on a server without DATABASE_URL.
+  if (r.status === 404) throw new Error("This quiz isn’t on the server, so the result wasn’t saved.");
+  if (!r.ok) throw new Error(`The quiz service answered ${r.status}.`);
+  return (await r.json()) as AttemptResult;
 }
+
+// --------------------------------------------------------------------- history
+
+export async function fetchHistory(limit = 20): Promise<QuizHistory> {
+  const r = await authed(`/quizzes?limit=${limit}`, { cache: "no-store" });
+  if (!r.ok) throw new Error(`The quiz service answered ${r.status}.`);
+  return (await r.json()) as QuizHistory;
+}
+
+/** History is only reachable against a live backend; fixture mode has none. */
+export const historyAvailable = !QUIZ_URL && !!API_BASE;

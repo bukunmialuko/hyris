@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Hyris",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Turn any web page into a quiz. Read, click, test what stuck.",
   "action": {
     "default_popup": "src/popup/index.html",

@@ -2,7 +2,7 @@
   "name": "hyris",
   "private": true,
   "version": "0.1.0",
-  "description": "Hyris — turn any web page into an AI-generated quiz",
+  "description": "Hyris \u2014 turn any web page into an AI-generated quiz",
   "author": "Oluwabukunmi Aluko",
   "license": "MIT",
   "workspaces": [
@@ -13,6 +13,7 @@
     "dev:ext": "npm run dev --workspace apps/extension",
     "build:ext": "npm run build --workspace apps/extension",
     "dev:api": "cd apps/api && uvicorn app.main:app --reload --port 8000",
-    "types": "npm run generate --workspace packages/contracts"
+    "types": "npm run generate --workspace packages/contracts",
+    "test:ext": "npm run test --workspace @hyris/extension"
   }
 }

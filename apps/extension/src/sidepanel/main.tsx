@@ -1,23 +1,25 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import type { QuizQuestion, QuizResponse } from "@hyris/contracts";
+import type { AttemptResult, Quiz as QuizPayload, QuizQuestion } from "@hyris/contracts";
 import { QuizSetup } from "../components/QuizSetup";
+import { History, HistoryIcon } from "../components/History";
+import { historyAvailable, submitAttempt } from "../lib/api";
 import { usePageProbe } from "../lib/page";
 import { useQuizProfile } from "../lib/prefs";
+import { progressFraction, progressLabel } from "../lib/steps";
 import { useTheme } from "../lib/theme";
 import { QUIZ_KEY, STATUS_KEY, profileSummary, readSession, type QuizStatus } from "../lib/session";
 import "../styles/theme.css";
 import "../styles/sidepanel.css";
 
-const LOAD_STEPS = ["Reading the page…", "Finding key concepts…", "Writing questions…", "Validating quality…"];
-const STEP_MS = 750;
 const KEYS = "ABCDEF";
 
 function SidePanel() {
   useTheme(); // applies data-theme, kept in sync with the popup
 
   const [status, setStatus] = useState<QuizStatus | null>(null);
-  const [quiz, setQuiz] = useState<QuizResponse | null>(null);
+  const [quiz, setQuiz] = useState<QuizPayload | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
 
   useEffect(() => {
     readSession().then((s) => { setStatus(s.status); setQuiz(s.quiz); });
@@ -25,51 +27,46 @@ function SidePanel() {
     const onChanged = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
       if (area !== "session") return;
       if (changes[STATUS_KEY]) setStatus((changes[STATUS_KEY].newValue as QuizStatus) ?? null);
-      if (changes[QUIZ_KEY]) setQuiz((changes[QUIZ_KEY].newValue as QuizResponse) ?? null);
+      if (changes[QUIZ_KEY]) setQuiz((changes[QUIZ_KEY].newValue as QuizPayload) ?? null);
     };
     chrome.storage.onChanged.addListener(onChanged);
     return () => chrome.storage.onChanged.removeListener(onChanged);
   }, []);
+
+  const subtitle = showHistory
+    ? "What you’ve covered"
+    : status ? "Active recall session" : "Turn this page into a quiz";
 
   return (
     <div className="sp-inner">
       <div className="sp-head">
         <div className="t">
           hyris
-          <span className="micro">{status ? "Active recall session" : "Turn this page into a quiz"}</span>
+          <span className="micro">{subtitle}</span>
         </div>
-        <button className="sp-close" onClick={() => window.close()} title="Close">×</button>
+        <div className="sp-actions">
+          {historyAvailable && (
+            <button
+              className={`sp-icon${showHistory ? " on" : ""}`}
+              onClick={() => setShowHistory((v) => !v)}
+              title={showHistory ? "Back to the quiz" : "Past quizzes"}
+              aria-label={showHistory ? "Back to the quiz" : "Past quizzes"}
+              aria-pressed={showHistory}
+            >
+              <HistoryIcon />
+            </button>
+          )}
+          <button className="sp-icon" onClick={() => window.close()} title="Close" aria-label="Close">×</button>
+        </div>
       </div>
       <div className="sp-body">
-        <Body status={status} quiz={quiz} />
+        {showHistory ? <History /> : <Body status={status} quiz={quiz} />}
       </div>
     </div>
   );
 }
 
-function Body({ status, quiz }: { status: QuizStatus | null; quiz: QuizResponse | null }) {
-  // The prototype waits for both the fetch and the loading animation before
-  // showing question 1; keep that beat rather than flashing straight through.
-  // Starts true so reopening the panel on an already-finished quiz goes
-  // straight to the questions instead of replaying the loader.
-  const [stepsDone, setStepsDone] = useState(true);
-  const [step, setStep] = useState(0);
-  const animatingRun = useRef<number | null>(null);
-
-  useEffect(() => {
-    if (status?.state !== "loading" || animatingRun.current === status.runId) return;
-    animatingRun.current = status.runId;
-    setStepsDone(false);
-    setStep(0);
-    let i = 0;
-    const t = setInterval(() => {
-      i++;
-      if (i < LOAD_STEPS.length) setStep(i);
-      else { clearInterval(t); setStepsDone(true); }
-    }, STEP_MS);
-    return () => clearInterval(t);
-  }, [status?.state, status?.runId]);
-
+function Body({ status, quiz }: { status: QuizStatus | null; quiz: QuizPayload | null }) {
   if (!status) return <SetupView />;
 
   if (status.state === "error") {
@@ -96,13 +93,18 @@ function Body({ status, quiz }: { status: QuizStatus | null; quiz: QuizResponse 
     );
   }
 
-  if (status.state === "loading" || !quiz || !stepsDone) {
+  // Real progress, reported by the graph itself — the run takes as long as it takes.
+  if (status.state === "loading" || !quiz) {
+    const steps = status.state === "loading" ? status.steps : [];
     return (
       <div className="loader-wrap">
         <div className="orb" />
         <div>
-          <div className="load-step micro">{LOAD_STEPS[step]}</div>
+          <div className="load-step micro">{progressLabel(steps)}</div>
           <div className="load-sub micro">{profileSummary(status.profile)}</div>
+        </div>
+        <div className="p-track run">
+          <div className="p-fill" style={{ width: `${progressFraction(steps) * 100}%` }} />
         </div>
       </div>
     );
@@ -136,35 +138,87 @@ function SetupView() {
   );
 }
 
-interface Answered { concept: string; correct: boolean }
+/** What the results screen renders: the server's verdict, or ours if it couldn't be reached. */
+type Outcome =
+  | { kind: "server"; result: AttemptResult }
+  | { kind: "local"; score: number; total: number; concepts: [string, boolean][]; reason: string };
 
-function Quiz({ quiz, source }: { quiz: QuizResponse; source: string }) {
-  const questions = quiz.quiz.questions;
+function Quiz({ quiz, source }: { quiz: QuizPayload; source: string }) {
+  const questions = quiz.questions;
   const [idx, setIdx] = useState(0);
-  const [score, setScore] = useState(0);
   const [picked, setPicked] = useState<number | null>(null);
-  const [answered, setAnswered] = useState<Answered[]>([]);
-  const [done, setDone] = useState(false);
+  const [answers, setAnswers] = useState<Record<string, number>>({});
+  const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  // A fresh key per sitting. Retrying a failed submit reuses it so the server can't double-count;
+  // retaking the quiz mints a new one, or the server would record nothing and mastery would
+  // never move.
+  const [attemptId, setAttemptId] = useState(() => crypto.randomUUID());
+
+  const score = useMemo(
+    () => questions.filter((q) => answers[String(q.slot_id)] === q.correct_answer).length,
+    [answers, questions],
+  );
 
   function answer(i: number) {
     if (picked !== null) return;
-    const q = questions[idx];
-    const correct = i === q.correct_answer;
     setPicked(i);
-    if (correct) setScore((s) => s + 1);
-    setAnswered((a) => [...a, { concept: q.concept ?? "General", correct }]);
+    setAnswers((a) => ({ ...a, [String(questions[idx].slot_id)]: i }));
+  }
+
+  async function finish(final: Record<string, number>) {
+    setSubmitting(true);
+    try {
+      setOutcome({ kind: "server", result: await submitAttempt(quiz.id, final, attemptId) });
+    } catch (e) {
+      // Never lose the learner's result to a network problem — show ours and say it didn't sync.
+      setOutcome({
+        kind: "local",
+        score: questions.filter((q) => final[String(q.slot_id)] === q.correct_answer).length,
+        total: questions.length,
+        concepts: localConcepts(questions, final),
+        reason: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   function next() {
-    if (idx + 1 >= questions.length) { setDone(true); return; }
+    if (idx + 1 >= questions.length) { void finish(answers); return; }
     setIdx(idx + 1);
     setPicked(null);
     document.querySelector(".sp-body")?.scrollTo(0, 0);
   }
 
-  function retry() { setIdx(0); setScore(0); setPicked(null); setAnswered([]); setDone(false); }
+  function retry() {
+    setIdx(0);
+    setPicked(null);
+    setAnswers({});
+    setOutcome(null);
+    setAttemptId(crypto.randomUUID()); // a genuine retake, not a resubmit
+  }
 
-  if (done) return <Results questions={questions} score={score} answered={answered} source={source} onRetry={retry} />;
+  if (submitting) {
+    return (
+      <div className="loader-wrap">
+        <div className="orb" />
+        <div className="load-step micro">Scoring…</div>
+      </div>
+    );
+  }
+
+  if (outcome) {
+    return (
+      <Results
+        outcome={outcome}
+        source={source}
+        onRetry={retry}
+        onResubmit={() => void finish(answers)}
+      />
+    );
+  }
 
   const q: QuizQuestion = questions[idx];
   const progress = ((picked === null ? idx : idx + 1) / questions.length) * 100;
@@ -215,23 +269,39 @@ function optionState(i: number, picked: number | null, correct: number): string 
   return " locked";
 }
 
-function Results({ questions, score, answered, source, onRetry }: {
-  questions: QuizQuestion[];
-  score: number;
-  answered: Answered[];
+/** Offline stand-in for the server's per-concept view: a concept holds only if every question on
+ *  it was right. Coarser than the server's EMA, which is why it is the fallback and not the rule. */
+function localConcepts(questions: QuizQuestion[], answers: Record<string, number>): [string, boolean][] {
+  const m = new Map<string, boolean>();
+  for (const q of questions) {
+    const name = q.concept ?? "General";
+    const ok = answers[String(q.slot_id)] === q.correct_answer;
+    m.set(name, (m.get(name) ?? true) && ok);
+  }
+  return [...m.entries()];
+}
+
+function Results({ outcome, source, onRetry, onResubmit }: {
+  outcome: Outcome;
   source: string;
   onRetry: () => void;
+  onResubmit: () => void;
 }) {
-  const total = questions.length;
-  const pct = Math.round((score / total) * 100);
+  const score = outcome.kind === "server" ? outcome.result.score : outcome.score;
+  const total = outcome.kind === "server" ? outcome.result.total : outcome.total;
+  const pct = total ? Math.round((score / total) * 100) : 0;
   const verdict = pct >= 80 ? "strong recall" : pct >= 50 ? "review the gaps" : "worth a re-read";
 
-  // A concept counts as mastered only if every question touching it was correct.
-  const byConcept = useMemo(() => {
+  // The server reports per question; fold to per concept, which is the unit mastery moves in.
+  const concepts = useMemo<[string, boolean][]>(() => {
+    if (outcome.kind === "local") return outcome.concepts;
     const m = new Map<string, boolean>();
-    answered.forEach((a) => m.set(a.concept, (m.get(a.concept) ?? true) && a.correct));
+    for (const r of outcome.result.results) {
+      const name = r.concept ?? "General";
+      m.set(name, (m.get(name) ?? true) && r.correct);
+    }
     return [...m.entries()];
-  }, [answered]);
+  }, [outcome]);
 
   async function newQuiz() {
     // Clearing the run drops the panel back to the setup page.
@@ -245,8 +315,15 @@ function Results({ questions, score, answered, source, onRetry }: {
         <div className="res-verdict micro">{score}/{total} correct · {verdict}</div>
       </div>
 
+      {outcome.kind === "local" && (
+        <div className="sync-warn micro">
+          Scored on this device — {outcome.reason}{" "}
+          <button className="link-btn" onClick={onResubmit}>Try syncing again</button>
+        </div>
+      )}
+
       <div className="field-label micro">Concepts covered</div>
-      {byConcept.map(([concept, ok]) => (
+      {concepts.map(([concept, ok]) => (
         <div className="concept-row" key={concept}>
           <span>{concept}</span>
           <span className={`pill ${ok ? "good" : "weak"}`}>{ok ? "mastered" : "retest"}</span>

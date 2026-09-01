@@ -103,3 +103,5 @@ jobs:
       - run: npm ci
       - name: Typecheck and build
         run: npm run build --workspace @hyris/extension
+      - name: Unit tests
+        run: npm run test --workspace @hyris/extension

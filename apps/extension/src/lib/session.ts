@@ -1,6 +1,6 @@
 // Shape of the generation state the background writes and the side panel reads.
 
-import type { QuizResponse } from "@hyris/contracts";
+import type { Quiz } from "@hyris/contracts";
 
 export const QUIZ_KEY = "currentQuiz";
 export const STATUS_KEY = "hyrisStatus";
@@ -19,20 +19,21 @@ interface StatusBase {
 }
 
 export type QuizStatus =
-  | (StatusBase & { state: "loading" })
+  // steps are the graph nodes the API reports finished so far, newest last.
+  | (StatusBase & { state: "loading"; steps: string[] })
   | (StatusBase & { state: "ready"; source: string })
   | (StatusBase & { state: "error"; message: string; retriable: boolean });
 
 export interface SessionState {
   status: QuizStatus | null;
-  quiz: QuizResponse | null;
+  quiz: Quiz | null;
 }
 
 export async function readSession(): Promise<SessionState> {
   const v = await chrome.storage.session.get([QUIZ_KEY, STATUS_KEY]);
   return {
     status: (v[STATUS_KEY] as QuizStatus) ?? null,
-    quiz: (v[QUIZ_KEY] as QuizResponse) ?? null,
+    quiz: (v[QUIZ_KEY] as Quiz) ?? null,
   };
 }
 
